@@ -6,7 +6,7 @@ from datetime import datetime
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="2 – Thumbnails e Imagens", layout="wide")
+st.set_page_config(page_title="2 – Imagens", layout="wide")
 st.title("🖼 2 – Gerador de Imagens do Vídeo (Pollinations)")
 
 # -------------------------------------------------------------------
