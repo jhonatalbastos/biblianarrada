@@ -1,224 +1,269 @@
 import streamlit as st
-import uuid
+import json
+import re
 from datetime import datetime
-import pandas as pd
-import requests
+import os
+from groq import Groq
 
-st.set_page_config(page_title="Bíblia Narrada - Studio", layout="wide")
+# Configuração da Página
+st.set_page_config(
+    page_title="Início - Bíblia Narrada",
+    page_icon="🙏",
+    layout="wide"
+)
+
+st.title("🙏 Bíblia Narrada: Planejamento Litúrgico")
+st.markdown("---")
 
 # -------------------------------------------------------------------
-# Configuração Única do Canal "Bíblia Narrada"
+# 1. Configuração e Inicialização
 # -------------------------------------------------------------------
-CANAL_FIXO_ID = "biblia_narrada_oficial"
-CANAL_FIXO_NOME = "Bíblia Narrada"
-CANAL_FIXO_URL = "https://www.youtube.com/@BibliaNarrada"
 
-def inicializar_db():
-    if "db" not in st.session_state:
-        st.session_state.db = {"canais": {}}
+# Inicializa banco de dados na sessão se não existir
+if "db" not in st.session_state:
+    st.session_state.db = {"canais": {}, "liturgia_atual": None}
+
+# Cliente Groq (tenta pegar a chave dos secrets ou input)
+api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+
+# -------------------------------------------------------------------
+# 2. Funções de Processamento de Dados (Parsing & AI)
+# -------------------------------------------------------------------
+
+def get_day_name(date_str):
+    """Converte '05/12/2025' para 'Sexta-feira'."""
+    try:
+        date_obj = datetime.strptime(date_str, "%d/%m/%Y")
+        days = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
+        return days[date_obj.weekday()]
+    except:
+        return "Dia Desconhecido"
+
+def clean_html(raw_html):
+    """Remove tags HTML básicas como <br>, <b>."""
+    cleanr = re.compile('<.*?>')
+    text = re.sub(cleanr, ' ', raw_html)
+    return text.strip()
+
+def extract_book_ref(title, reading_type):
+    """
+    Extrai a referência do livro (Ex: 'Isaías 29, 17-24') do título completo.
+    Usa regras de string para rapidez, mas pode ser refinado via IA.
+    """
+    # Remove prefixos comuns
+    prefixes = [
+        "Primeira leitura:", "Segunda leitura:", "Salmo", 
+        "Proclamação do Evangelho de Jesus Cristo segundo", 
+        "Evangelho de Jesus Cristo segundo", "Leitura do livro"
+    ]
     
-    # Garante que o canal oficial exista
-    if CANAL_FIXO_ID not in st.session_state.db["canais"]:
-        st.session_state.db["canais"][CANAL_FIXO_ID] = {
-            "nome": CANAL_FIXO_NOME,
-            "url": CANAL_FIXO_URL,
-            "videos": {},
-            "preferencias_titulo": "Bíblia, Oração, Deus, Fé"
+    clean_title = title
+    for p in prefixes:
+        if p in clean_title:
+            clean_title = clean_title.replace(p, "")
+    
+    return clean_title.strip(" :-")
+
+def refine_with_groq(text_content, context_type):
+    """
+    Usa IA para limpar ou resumir textos se necessário.
+    Útil para normalizar o texto para o roteiro.
+    """
+    if not api_key:
+        return text_content # Fallback se sem chave
+    
+    client = Groq(api_key=api_key)
+    
+    prompt = f"""
+    Atue como um editor de textos litúrgicos católicos.
+    Sua tarefa é limpar e formatar o seguinte texto do tipo '{context_type}'.
+    
+    Texto Original: "{text_content}"
+    
+    Regras:
+    1. Remova numerações de versículos misturadas no texto (ex: "17Dentro" -> "Dentro").
+    2. Mantenha a reverência e a pontuação correta para leitura em voz alta.
+    3. Retorne APENAS o texto limpo, sem introduções.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-70b-8192",
+            temperature=0.1,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.warning(f"Erro ao refinar com IA: {e}")
+        return text_content
+
+# -------------------------------------------------------------------
+# 3. Ingestão de Dados (Mock do JSON fornecido)
+# -------------------------------------------------------------------
+
+# Aqui simulamos a resposta da API que você forneceu. 
+# Em produção, isso seria um request.get(url).json()
+raw_data_example = {
+    "objective": "A API_LITURGIA_DIARIA visa disponibilizar...",
+    "source": "https://sagradaliturgia.com.br/",
+    "today": {
+        "color": "roxo",
+        "date": "05/12/2025",
+        "entry_title": "1a. Semana do Advento<br/>Ciclo do Natal"
+    },
+    "readings": {
+        "first_reading": {
+            "title": "Primeira leitura: Isaías 29, 17-24",
+            "text": "Assim fala o Senhor Deus: 17Dentro de pouco tempo..."
+        },
+        "gospel": {
+            "title": "Proclamação do Evangelho de Jesus Cristo segundo São Mateus:",
+            "head_title": "Evangelho de Jesus Cristo segundo São Mateus 9, 27-31", # Usaremos este se disponível
+            "text": "Naquele tempo: 27Partindo Jesus, dois cegos o seguiram..."
+        },
+        "psalm": {
+            "title": "Salmo 26 (27)",
+            "response": "R: O Senhor é minha luz e salvação.",
+            "content_psalm": [
+                "- O Senhor é minha luz e salvação...",
+                "- Ao Senhor eu peço apenas uma coisa...",
+                "- Sei que a bondade do Senhor..."
+            ]
         }
-    
-    # Força a seleção deste canal para todo o app
-    st.session_state.canal_atual_id = CANAL_FIXO_ID
-
-inicializar_db()
-
-# Atalhos para variáveis globais
-db = st.session_state.db
-canal = db["canais"][CANAL_FIXO_ID]
-
-# -------------------------------------------------------------------
-# Funções Auxiliares
-# -------------------------------------------------------------------
-def gerar_id():
-    return str(uuid.uuid4())[:8]
-
-def criar_video_com_liturgia(dados_liturgia, data_escolhida):
-    """Cria o vídeo no banco com base na liturgia."""
-    novo_vid_id = gerar_id()
-    
-    # Prepara o texto combinado
-    leitura1 = dados_liturgia.get('primeiraLeitura', 'Leitura 1 não encontrada.')
-    salmo = dados_liturgia.get('salmo', 'Salmo não encontrado.')
-    evangelho = dados_liturgia.get('evangelho', 'Evangelho não encontrado.')
-    segunda = dados_liturgia.get('segundaLeitura', '')
-
-    texto_combinado = f"""LITURGIA DO DIA: {data_escolhida}
-
-PRIMEIRA LEITURA:
-{leitura1}
-
-SALMO:
-{salmo}
-
-EVANGELHO:
-{evangelho}
-"""
-    if segunda:
-        texto_combinado += f"\nSEGUNDA LEITURA:\n{segunda}"
-
-    titulo_sug = f"Evangelho do Dia - {data_escolhida}"
-
-    novo_video = {
-        "id": novo_vid_id,
-        "titulo": titulo_sug,
-        "criado_em": datetime.now().isoformat(),
-        "ultima_atualizacao": datetime.now().isoformat(),
-        "status": {
-            "1_roteiro": False,
-            "2_thumbnail": False,
-            "3_audio": False,
-            "4_video": False,
-            "5_publicacao": False,
-        },
-        "artefatos": {
-            "roteiro": {
-                "ideia_original": texto_combinado.strip(),
-                "roteiro": {},
-                "image_prompts": {},
-                "titulo_video": titulo_sug
-            },
-            "imagens_roteiro": {},
-            "audio_path": None,
-            "video_path": None,
-        },
     }
+}
+
+# -------------------------------------------------------------------
+# 4. Interface Principal
+# -------------------------------------------------------------------
+
+col_info, col_action = st.columns([2, 1])
+
+with col_info:
+    st.info("ℹ️ Este painel carrega a Liturgia Diária e prepara os dados para a criação de roteiros e vídeos.")
+
+with col_action:
+    # Simula botão de busca
+    if st.button("🔄 Buscar Liturgia de Hoje", type="primary"):
+        st.session_state.raw_liturgia = raw_data_example
+        st.rerun()
+
+# Verifica se temos dados carregados
+if "raw_liturgia" in st.session_state:
+    data = st.session_state.raw_liturgia
+    today_info = data["today"]
+    readings = data["readings"]
     
-    canal["videos"][novo_vid_id] = novo_video
-    return novo_vid_id
+    # Processamento dos metadados globais
+    data_formatada = today_info["date"]
+    dia_semana = get_day_name(data_formatada)
+    tempo_liturgico = clean_html(today_info["entry_title"])
+    cor_liturgica = today_info["color"]
 
-# -------------------------------------------------------------------
-# Interface Principal
-# -------------------------------------------------------------------
-st.title(f"🎬 Studio {CANAL_FIXO_NOME}")
-st.write("Bem-vindo ao painel de controle de produção.")
+    # Container de Cabeçalho Visual
+    with st.container():
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📅 Data", data_formatada, dia_semana)
+        c2.metric("✝️ Tempo Litúrgico", tempo_liturgico.split(" - ")[0])
+        c3.metric("🎨 Cor", cor_liturgica.upper())
+        c4.metric("📚 Fonte", "Sagrada Liturgia")
 
-# --- SEÇÃO 1: BUSCA LITURGIA (CORRIGIDA) ---
-st.markdown("### 🕊️ Nova Produção: Liturgia Diária")
+    st.markdown("### 📖 Leituras Processadas")
+    
+    # Preparar estrutura de dados limpa
+    structured_readings = []
 
-with st.container(border=True):
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        data_busca = st.date_input("Escolha a data", datetime.now())
-    with c2:
-        st.write("") 
-        st.write("") 
-        btn_buscar = st.button("🔍 Buscar Leituras na API", type="primary")
+    # Definição de mapeamento para iterar
+    map_keys = {
+        "first_reading": "1ª Leitura",
+        "second_reading": "2ª Leitura", # Caso exista
+        "psalm": "Salmo",
+        "gospel": "Evangelho"
+    }
 
-    if "liturgia_temp" not in st.session_state:
-        st.session_state.liturgia_temp = None
+    tabs = st.tabs(list(map_keys.values()))
 
-    if btn_buscar:
-        # Formata a data para o padrão da API: YYYY-MM-DD
-        data_str = data_busca.strftime('%Y-%m-%d')
-        # URL da API Comunitária
-        url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
-        
-        try:
-            with st.spinner(f"Consultando liturgia de {data_str}..."):
-                # Header as vezes ajuda a não ser bloqueado
-                headers = {'User-Agent': 'Mozilla/5.0'} 
-                resp = requests.get(url, headers=headers, timeout=15)
-                
-            if resp.status_code == 200:
-                dados = resp.json()
-                # Validação simples se veio conteúdo
-                if 'evangelho' in dados or 'primeiraLeitura' in dados:
-                    st.session_state.liturgia_temp = dados
-                    st.success("Leituras encontradas com sucesso!")
-                else:
-                    st.warning("A API retornou 200 OK, mas os campos esperados (evangelho/leitura) estão vazios.")
-                    st.json(dados) # Mostra o que veio pra debug
-                    st.session_state.liturgia_temp = None
-            else:
-                st.error(f"Erro na API: Status {resp.status_code}")
-                st.write(resp.text)
-                st.session_state.liturgia_temp = None
-                
-        except Exception as e:
-            st.error(f"Erro de conexão: {e}")
-            st.session_state.liturgia_temp = None
-
-    # Exibição do Resultado
-    if st.session_state.liturgia_temp:
-        dados = st.session_state.liturgia_temp
-        
-        # Expander para ver se os dados estão lá mesmo
-        with st.expander("📖 Visualizar Leituras (Expandir)", expanded=True):
-            st.markdown(f"**Evangelho:** {dados.get('evangelho', 'Não encontrado')[:300]}...")
-            st.markdown(f"**Salmo:** {dados.get('salmo', 'Não encontrado')[:150]}...")
+    for i, (key, label) in enumerate(map_keys.items()):
+        if key in readings:
+            r_data = readings[key]
             
-            # Debug para usuário ver o JSON completo se achar que está em branco
-            if st.checkbox("Ver JSON Bruto (Debug)"):
-                st.json(dados)
+            # 1. Determinar Título/Livro
+            if key == "gospel" and "head_title" in r_data:
+                raw_title = r_data["head_title"]
+            else:
+                raw_title = r_data["title"]
+            
+            livro_ref = extract_book_ref(raw_title, label)
+            
+            # 2. Determinar Texto
+            if key == "psalm":
+                # Junta o refrão com as estrofes
+                refrao = r_data.get("response", "")
+                estrofes = "\n\n".join(r_data.get("content_psalm", []))
+                texto_completo = f"{refrao}\n\n{estrofes}"
+            else:
+                texto_completo = r_data.get("text", "")
 
-        if st.button("🚀 Iniciar Projeto com esta Liturgia"):
-            novo_id = criar_video_com_liturgia(dados, data_busca.strftime('%d/%m/%Y'))
-            st.session_state.video_atual_id = novo_id
-            st.success("Projeto criado! Vá para a página '1 - Roteiro' na barra lateral.")
-            st.rerun()
+            # 3. Estrutura final para o objeto
+            item_struct = {
+                "tipo_leitura": label,
+                "data_completa": f"{dia_semana}, {data_formatada}",
+                "livro": livro_ref,
+                "tempo_liturgico": tempo_liturgico,
+                "texto_original": texto_completo,
+                "texto_limpo": None # Será preenchido se usar IA
+            }
+            
+            # UI na Aba
+            with tabs[i]:
+                st.subheader(f"{label}: {livro_ref}")
+                st.caption(f"{dia_semana}, {data_formatada} | {tempo_liturgico}")
+                
+                txt_col, meta_col = st.columns([3, 1])
+                
+                with txt_col:
+                    st.text_area("Texto Original", texto_completo, height=200, key=f"txt_{key}")
+                    
+                    # Botão para refinar com IA (Opcional)
+                    if st.button(f"✨ Limpar texto com IA ({label})", key=f"btn_ai_{key}"):
+                        with st.spinner("A IA está limpando a formatação e números de versículos..."):
+                            texto_limpo = refine_with_groq(texto_completo, label)
+                            st.session_state[f"clean_{key}"] = texto_limpo
+                            item_struct["texto_limpo"] = texto_limpo
+                            st.success("Texto refinado!")
+                    
+                    # Mostra texto limpo se existir
+                    if f"clean_{key}" in st.session_state:
+                        st.text_area("Texto Pronto para Locução", st.session_state[f"clean_{key}"], height=200)
+                        item_struct["texto_limpo"] = st.session_state[f"clean_{key}"]
 
-st.markdown("---")
+                with meta_col:
+                    st.markdown("**Metadados Extraídos:**")
+                    st.json({
+                        "Tipo": item_struct["tipo_leitura"],
+                        "Data": item_struct["data_completa"],
+                        "Livro": item_struct["livro"],
+                        "Tempo": item_struct["tempo_liturgico"]
+                    })
+                    
+            structured_readings.append(item_struct)
 
-# --- SEÇÃO 2: DASHBOARD DO CANAL ---
-st.subheader("📊 Projetos em Andamento")
-
-videos = canal["videos"]
-
-if not videos:
-    st.info("Nenhum projeto criado ainda. Use a busca acima para começar.")
+    # -------------------------------------------------------------------
+    # 5. Ação Final: Salvar e Ir para Roteiro
+    # -------------------------------------------------------------------
+    st.markdown("---")
+    col_save, _ = st.columns([1, 4])
+    with col_save:
+        if st.button("🚀 Usar estes dados no Roteiro", type="primary"):
+            # Salva na "Sessão Global" do app
+            st.session_state.dados_liturgia_selecionada = structured_readings
+            
+            # Opcional: Criar automaticamente uma entrada no "Banco de Canais"
+            # simulando a criação de uma ideia de vídeo baseada na liturgia
+            st.success("Dados enviados para o módulo de Roteiro! Vá para a página '1 - Roteiro Viral'.")
+            
 else:
-    # Lógica de seleção do vídeo ativo
-    st.write("Selecione qual vídeo você quer editar agora:")
-    
-    # Prepara lista para o selectbox
-    lista_vids_ordenada = sorted(videos.items(), key=lambda x: x[1]['criado_em'], reverse=True)
-    opcoes_ids = [v[0] for v in lista_vids_ordenada]
-    
-    # Função para mostrar o nome bonito no selectbox
-    def formatar_opcao(vid_id):
-        v = videos[vid_id]
-        status_txt = "Novo"
-        if v["status"]["5_publicacao"]: status_txt = "Publicado ✅"
-        elif v["status"]["4_video"]: status_txt = "Vídeo Pronto 🎬"
-        elif v["status"]["1_roteiro"]: status_txt = "Roteiro OK 📝"
-        return f"{v.get('titulo', 'Sem Título')} ({status_txt})"
+    st.warning("Clique em 'Buscar Liturgia' para carregar os dados do dia.")
 
-    idx_atual = 0
-    if st.session_state.video_atual_id in opcoes_ids:
-        idx_atual = opcoes_ids.index(st.session_state.video_atual_id)
-
-    escolha = st.selectbox(
-        "Projetos Recentes:", 
-        options=opcoes_ids, 
-        format_func=formatar_opcao,
-        index=idx_atual
-    )
-    
-    if escolha:
-        st.session_state.video_atual_id = escolha
-        v_sel = videos[escolha]
-        
-        # Mini resumo do vídeo selecionado
-        st.info(f"Editando: **{v_sel.get('titulo')}** | ID: {escolha}")
-        
-        # Tabela simples de status
-        status = v_sel["status"]
-        cols = st.columns(5)
-        cols[0].checkbox("Roteiro", value=status["1_roteiro"], disabled=True)
-        cols[1].checkbox("Thumb", value=status["2_thumbnail"], disabled=True)
-        cols[2].checkbox("Áudio", value=status["3_audio"], disabled=True)
-        cols[3].checkbox("Vídeo", value=status["4_video"], disabled=True)
-        cols[4].checkbox("Publicado", value=status["5_publicacao"], disabled=True)
-
-# Rodapé simples
-st.markdown("---")
-st.caption("Biblia Narrada Studio v2.0 - Integração Vercel API")
+# Debug (apenas para ver o estado)
+# st.write(st.session_state)
