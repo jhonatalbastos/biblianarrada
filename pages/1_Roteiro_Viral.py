@@ -1,134 +1,158 @@
-import os
-import json
-import uuid
-from datetime import datetime
-
 import streamlit as st
 from groq import Groq
+import json
+import os
 
-st.set_page_config(page_title="1 – Roteiro Litúrgico", layout="wide")
-st.title("📝 1 – Criador de Roteiro (Liturgia Diária)")
+# Configuração da Página
+st.set_page_config(
+    page_title="Roteiro Viral - Bíblia Narrada",
+    page_icon="✍️",
+    layout="wide"
+)
 
-# -------------------------------------------------------------------
-# Integração com Banco e Inicio.py
-# -------------------------------------------------------------------
-if "db" not in st.session_state:
-    st.session_state.db = {"canais": {}}
-db = st.session_state.db
+# Título e Descrição
+st.title("✍️ Gerador de Roteiro Viral")
+st.markdown("""
+Transforme a Liturgia Diária em um roteiro curto, impactante e pronto para **Reels, TikTok e Shorts**.
+A IA analisará o Evangelho e criará uma narrativa que conecta a mensagem milenar com dores e desejos modernos.
+""")
 
-# Verifica se temos dados vindos do Inicio.py
-dados_liturgia = st.session_state.get("dados_liturgia_selecionada")
+st.divider()
 
-if not dados_liturgia:
-    st.warning("⚠️ Nenhuma liturgia selecionada no Início. O roteiro será genérico.")
-    st.markdown("[Voltar para Início](Inicio)")
-else:
-    st.success(f"✅ Liturgia carregada: {dados_liturgia['data']}")
+# --- Configuração da API Key ---
+api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
 
-# -------------------------------------------------------------------
-# Configuração do Canal/Vídeo (Mantido da lógica original)
-# -------------------------------------------------------------------
-if "canal_atual_id" not in st.session_state:
-    st.session_state.canal_atual_id = None
-if "video_atual_id" not in st.session_state:
-    st.session_state.video_atual_id = None
+if not api_key:
+    st.error("❌ Chave da API Groq não encontrada. Configure-a nos 'secrets' do Streamlit.")
+    st.stop()
 
-canal_id = st.session_state.canal_atual_id
-# Se não tiver canal selecionado, cria um temporário ou avisa
-if not canal_id or canal_id not in db["canais"]:
-    st.info("Trabalhando em modo rascunho (sem canal vinculado).")
+client = Groq(api_key=api_key)
 
-# -------------------------------------------------------------------
-# Lógica de Geração com IA
-# -------------------------------------------------------------------
-api_key = st.secrets.get("GROQ_API_KEY")
-client = Groq(api_key=api_key) if api_key else None
-
-def gerar_roteiro_liturgico(dados):
-    """Gera um roteiro baseado nas leituras carregadas."""
+# --- Função de Geração de Roteiro ---
+def gerar_roteiro_liturgico(dados_liturgia):
+    """
+    Gera um roteiro viral baseado nos dados da liturgia usando Llama 3.
+    """
     
-    # Extrai textos
-    leituras_texto = "\n\n".join([f"{l['tipo']} ({l['livro']}): {l['texto']}" for l in dados['leituras']])
-    
+    # Prompt do Sistema (A "Persona" da IA)
     prompt_system = """
-    Você é um roteirista especializado em vídeos católicos para YouTube (estilo 'Bíblia Narrada').
-    Crie um roteiro emocionante e espiritual.
+    Você é um especialista em Copywriting para Redes Sociais Católicas e Roteirista de Vídeos Curtos (Reels/TikTok).
+    Sua missão é traduzir a profundidade teológica do Evangelho em uma linguagem simples, magnética e viral, sem perder a sacralidade.
     
-    Estrutura do JSON de resposta:
-    {
-      "titulo": "Um título viral e curto",
-      "intro": "Texto da introdução (gancho)",
-      "leitura_comentada": "O texto do Evangelho intercalado com breves explicações ou o texto na íntegra de forma narrativa.",
-      "reflexao": "Uma aplicação prática para a vida hoje.",
-      "oracao_final": "Uma oração curta de encerramento."
-    }
+    ESTRUTURA OBRIGATÓRIA DO ROTEIRO (JSON):
+    1. "hook_visual": Descrição da cena inicial (3s) para prender atenção visualmente.
+    2. "headline": A frase falada nos primeiros 3 segundos (O Gancho). Deve tocar numa dor ou curiosidade.
+    3. "corpo": O desenvolvimento da mensagem (máximo 40 segundos). Use storytelling.
+    4. "cta": Chamada para ação clara (Ex: "Comente 'Amém' se você crê").
+    5. "legenda": Sugestão de legenda para o post com hashtags.
+    6. "prompt_imagem": Um prompt detalhado para gerar uma imagem de capa ou fundo usando IA (estilo cinematográfico, realista).
+    
+    TOM DE VOZ:
+    - Próximo, acolhedor, mas com autoridade espiritual.
+    - Evite "evangeliquês" difícil. Use analogias do dia a dia.
+    - Foco na transformação: Do sofrimento para a esperança.
     """
-    
+
+    # Prompt do Usuário (O Conteúdo)
     prompt_user = f"""
-    Baseado na liturgia de hoje ({dados['data']}), crie um roteiro.
+    Crie um roteiro viral para o Evangelho de hoje.
     
-    AS LEITURAS SÃO:
-    {leituras_texto}
+    DADOS DA LITURGIA:
+    Data: {dados_liturgia.get('data', 'Hoje')}
+    Cor Litúrgica: {dados_liturgia.get('cor', 'N/A')}
+    Santo do Dia: {dados_liturgia.get('santo', 'N/A')}
     
-    O foco principal deve ser o Evangelho.
+    PRIMEIRA LEITURA (Resumo): {dados_liturgia.get('primeira_leitura', '')[:500]}...
+    
+    EVANGELHO COMPLETO:
+    {dados_liturgia.get('evangelho', '')}
+    
+    REFLEXÃO/HOMILIA BASE:
+    {dados_liturgia.get('reflexao', '')[:1000]}...
+    
+    Retorne APENAS um objeto JSON válido.
     """
-    
+
     try:
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": prompt_system},
                 {"role": "user", "content": prompt_user}
             ],
-            model="llama3-70b-8192",
+            # --- ATUALIZAÇÃO DO MODELO AQUI ---
+            model="llama-3.3-70b-versatile", 
+            # ----------------------------------
+            temperature=0.7,
+            max_tokens=2000,
             response_format={"type": "json_object"}
         )
         return json.loads(chat_completion.choices[0].message.content)
     except Exception as e:
-        st.error(f"Erro na IA: {e}")
+        st.error(f"Erro ao conectar com a IA: {e}")
         return None
 
-# -------------------------------------------------------------------
-# Interface de Edição
-# -------------------------------------------------------------------
+# --- Interface Principal ---
 
-col_left, col_right = st.columns([1, 1])
-
-with col_left:
-    st.subheader("Conteúdo Base")
-    if dados_liturgia:
-        for l in dados_liturgia['leituras']:
-            with st.expander(f"📜 Ver {l['tipo']}"):
-                st.write(l['texto'])
+# Verifica se há dados na sessão (vindos da Home)
+if "dados_liturgia" not in st.session_state:
+    st.warning("⚠️ Nenhuma liturgia carregada. Por favor, vá para a **Página Inicial (Início)** e carregue a liturgia do dia primeiro.")
+    if st.button("Ir para Início"):
+        st.switch_page("Inicio.py") # Ajuste se o nome do arquivo principal for diferente
+else:
+    dados = st.session_state["dados_liturgia"]
+    
+    # Exibe resumo do que foi carregado
+    st.success(f"📖 Liturgia carregada: {dados.get('data')} - {dados.get('santo')}")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.info("💡 **Dica:** O roteiro é gerado focado em retenção. Leia em voz alta para testar o ritmo.")
+        if st.button("✨ Gerar Roteiro Viral", type="primary", use_container_width=True):
+            with st.spinner("A IA está escrevendo seu roteiro..."):
+                roteiro_gerado = gerar_roteiro_liturgico(dados)
                 
-    if st.button("✨ Gerar Roteiro com IA", type="primary", disabled=(not client or not dados_liturgia)):
-        with st.spinner("A IA está meditando nas leituras..."):
-            roteiro_gerado = gerar_roteiro_liturgico(dados_liturgia)
-            if roteiro_gerado:
-                st.session_state.roteiro_atual = roteiro_gerado
-                st.success("Roteiro gerado!")
+                if roteiro_gerado:
+                    st.session_state["roteiro_atual"] = roteiro_gerado
+                    st.rerun() # Recarrega para mostrar o resultado
 
-with col_right:
-    st.subheader("✍️ Editor de Roteiro")
-    
-    roteiro = st.session_state.get("roteiro_atual", {})
-    
-    # Campos editáveis
-    titulo = st.text_input("Título do Vídeo", value=roteiro.get("titulo", ""))
-    intro = st.text_area("1. Introdução", value=roteiro.get("intro", ""), height=100)
-    corpo = st.text_area("2. Evangelho / Leitura", value=roteiro.get("leitura_comentada", ""), height=300)
-    reflexao = st.text_area("3. Reflexão / Homilia Curta", value=roteiro.get("reflexao", ""), height=150)
-    oracao = st.text_area("4. Oração Final", value=roteiro.get("oracao_final", ""), height=100)
-    
-    if st.button("💾 Salvar Roteiro para Vídeo"):
-        # Salva estrutura pronta para o gerador de áudio/vídeo
-        st.session_state.roteiro_finalizado = {
-            "titulo": titulo,
-            "blocos": [intro, corpo, reflexao, oracao]
-        }
-        
-        # Opcional: Atualizar o objeto 'video' no db['canais'] se estiver usando o sistema completo
-        if canal_id and st.session_state.video_atual_id:
-             # Lógica de atualização do DB original
-             pass
-             
-        st.success("Roteiro salvo! Pronto para gerar Áudio e Imagens.")
+    with col2:
+        if "roteiro_atual" in st.session_state:
+            r = st.session_state["roteiro_atual"]
+            
+            st.subheader("🎬 Seu Roteiro")
+            
+            # Exibição visual do Roteiro
+            container = st.container(border=True)
+            container.markdown(f"**🎥 Gancho Visual:** `{r.get('hook_visual')}`")
+            container.markdown(f"**🗣️ Headline (Fale isso):** \n> ## {r.get('headline')}")
+            container.markdown(f"**📜 Corpo do Texto:** \n\n{r.get('corpo')}")
+            container.markdown(f"**🔥 Chamada para Ação (CTA):** `{r.get('cta')}`")
+            
+            st.divider()
+            
+            with st.expander("📝 Legenda e Hashtags"):
+                st.code(r.get('legenda'), language="text")
+                
+            with st.expander("🎨 Prompt para Imagem (Midjourney/DALL-E)"):
+                st.code(r.get('prompt_imagem'), language="text")
+                
+            # Botão de Download (Opcional, salva como TXT)
+            texto_download = f"""ROTEIRO VIRAL - {dados.get('data')}
+            
+HEADLINE: {r.get('headline')}
+
+CORPO:
+{r.get('corpo')}
+
+CTA: {r.get('cta')}
+
+LEGENDA:
+{r.get('legenda')}
+            """
+            st.download_button(
+                label="📥 Baixar Roteiro (.txt)",
+                data=texto_download,
+                file_name=f"roteiro_viral_{dados.get('data').replace('/', '-')}.txt",
+                mime="text/plain"
+            )
