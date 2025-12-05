@@ -1,160 +1,191 @@
 import streamlit as st
-import uuid
-from datetime import datetime
-import pandas as pd
+import requests
+import sqlite3
+import json
+import datetime
 
-st.set_page_config(page_title="Bíblia Narrada - Dashboard", layout="wide")
-st.title("📖 Bíblia Narrada: Gerenciador de Leituras")
+# --- Configuração da Página ---
+st.set_page_config(page_title="Início - Dashboard", page_icon="🙏", layout="wide")
 
-# -------------------------------------------------------------------
-# DB em sessão (Simplificado para Canal Único)
-# -------------------------------------------------------------------
-ID_CANAL_PADRAO = "biblia_narrada_v1"
+# --- Inicialização do Estado (Session State) ---
+if 'progresso_leituras' not in st.session_state:
+    st.session_state['progresso_leituras'] = {} 
 
-def inicializar_db():
-    # Se não existir DB, cria
-    if "db" not in st.session_state:
-        st.session_state.db = {"canais": {}}
-    
-    # Se não existir o canal padrão, cria automaticamente
-    if ID_CANAL_PADRAO not in st.session_state.db["canais"]:
-        st.session_state.db["canais"][ID_CANAL_PADRAO] = {
-            "nome": "Bíblia Narrada",
-            "nicho": "Espiritualidade Cristã",
-            "videos": {},
-            "preferencias_titulo": "Use títulos emotivos, curtos e com versículos chave."
-        }
-    
-    # Define o canal atual fixo
-    st.session_state.canal_atual_id = ID_CANAL_PADRAO
+if 'leitura_atual' not in st.session_state:
+    st.session_state['leitura_atual'] = None 
 
-inicializar_db()
+# --- Funções de Banco e API ---
+def init_db():
+    conn = sqlite3.connect('liturgia_db.sqlite')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS historico 
+                 (data_liturgia TEXT PRIMARY KEY, santo TEXT, cor TEXT, json_completo TEXT, data_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
 
-db = st.session_state.db
-canal = db["canais"][ID_CANAL_PADRAO]
+def salvar_no_banco(dados):
+    conn = sqlite3.connect('liturgia_db.sqlite')
+    c = conn.cursor()
+    json_str = json.dumps(dados, ensure_ascii=False)
+    c.execute('INSERT OR REPLACE INTO historico (data_liturgia, santo, cor, json_completo) VALUES (?, ?, ?, ?)', 
+              (dados['data'], dados['liturgia'], dados['cor'], json_str))
+    conn.commit()
+    conn.close()
 
-# Inicializa variável de vídeo atual se não existir
-if "video_atual_id" not in st.session_state:
-    st.session_state.video_atual_id = None
+def carregar_do_banco(data_str):
+    conn = sqlite3.connect('liturgia_db.sqlite')
+    c = conn.cursor()
+    c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
+    res = c.fetchone()
+    conn.close()
+    if res:
+        return json.loads(res[0])
+    return None
 
-# -------------------------------------------------------------------
-# Funções Auxiliares
-# -------------------------------------------------------------------
-def gerar_id():
-    return str(uuid.uuid4())[:8]
+def safe_extract(source, key, sub_key="texto"):
+    val = source.get(key)
+    if val is None: return ""
+    if isinstance(val, str): return "" if sub_key == "referencia" else val
+    if isinstance(val, dict): return val.get(sub_key, "")
+    return str(val)
 
-def criar_novo_video(titulo_ideia):
-    vid_id = gerar_id()
-    novo_video = {
-        "id": vid_id,
-        "titulo": titulo_ideia,
-        "criado_em": datetime.now().isoformat(),
-        "ultima_atualizacao": datetime.now().isoformat(),
-        "status": {
-            "1_roteiro": False,
-            "2_thumbnail": False,
-            "3_audio": False,
-            "4_video": False,
-            "5_publicacao": False
-        },
-        "artefatos": {
-            "roteiro": {},
-            "imagens_roteiro": {},
-            "audio_path": None,
-            "video_path": None
-        }
-    }
-    canal["videos"][vid_id] = novo_video
-    st.session_state.video_atual_id = vid_id
-    st.success(f"Leitura '{titulo_ideia}' iniciada!")
-    st.rerun()
-
-def selecionar_video(vid_id):
-    st.session_state.video_atual_id = vid_id
-    st.rerun()
-
-def excluir_video(vid_id):
-    if vid_id in canal["videos"]:
-        del canal["videos"][vid_id]
-        if st.session_state.video_atual_id == vid_id:
-            st.session_state.video_atual_id = None
-        st.rerun()
-
-# -------------------------------------------------------------------
-# Interface Principal
-# -------------------------------------------------------------------
-
-# Sidebar: Criar Nova Leitura
-with st.sidebar:
-    st.header("✨ Nova Leitura")
-    novo_titulo = st.text_input("Tema ou Passagem (ex: Salmo 23)")
-    if st.button("Iniciar Projeto", type="primary"):
-        if novo_titulo:
-            criar_novo_video(novo_titulo)
-        else:
-            st.warning("Digite um tema para começar.")
-            
-    st.markdown("---")
-    st.info("Este aplicativo foi otimizado para gerar vídeos com a estrutura: Hook, Leitura, Reflexão, Aplicação e Oração.")
-
-# Área Principal: Lista de Projetos
-st.subheader("📅 Leituras em Produção")
-
-if not canal["videos"]:
-    st.info("Nenhuma leitura cadastrada. Use a barra lateral para criar a primeira.")
-else:
-    # Converte para DataFrame para facilitar a visualização
-    lista_vids = []
-    for vid_id, dados in canal["videos"].items():
-        status = dados.get("status", {})
-        # Barra de progresso visual simples
-        progresso = sum([1 for k, v in status.items() if v]) 
-        total_etapas = 5
-        pct = int((progresso / total_etapas) * 100)
+def buscar_liturgia_api(data_obj):
+    dia, mes, ano = data_obj.day, data_obj.month, data_obj.year
+    url = f"https://liturgia.up.railway.app/{dia}-{mes}-{ano}"
+    try:
+        resp = requests.get(url, timeout=10)
         
-        lista_vids.append({
-            "ID": vid_id,
-            "Título": dados["titulo"],
-            "Criado em": dados["criado_em"][:10], # Apenas a data
-            "Progresso": f"{pct}%",
-            "Etapa Atual": "Concluído" if pct == 100 else "Em andamento"
-        })
-    
-    # Exibe em formato de cards ou tabela. Tabela é mais limpa.
-    df = pd.DataFrame(lista_vids)
-    
-    # Layout de colunas para cada vídeo
-    for vid_id, dados in canal["videos"].items():
-        with st.container():
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-            with col1:
-                st.markdown(f"### 📜 {dados['titulo']}")
-                st.caption(f"ID: {vid_id} | Criado: {dados['criado_em'][:16]}")
+        if resp.status_code == 404:
+            return None, "Liturgia não encontrada para esta data."
+        
+        if resp.status_code != 200: 
+            return None, f"Erro na API: {resp.status_code}"
             
-            with col2:
-                # Indicadores de Status
-                s = dados["status"]
-                st.write(
-                    f"{'✅' if s['1_roteiro'] else '⬜'} Roteiro\n\n"
-                    f"{'✅' if s['2_thumbnail'] else '⬜'} Thumb\n\n"
-                    f"{'✅' if s['3_audio'] else '⬜'} Áudio"
-                )
-            
-            with col3:
-                st.write(
-                    f"{'✅' if s['4_video'] else '⬜'} Vídeo\n\n"
-                    f"{'✅' if s['5_publicacao'] else '⬜'} Publicado"
-                )
+        d = resp.json()
+        
+        # Mapeamento para garantir estrutura padrão (Novo Formato)
+        return {
+            "data": d.get("data", f"{dia:02d}/{mes:02d}/{ano}"),
+            "liturgia": d.get("liturgia", "Liturgia Diária"),
+            "cor": d.get("cor", "N/A"),
+            "santo": d.get("liturgia", ""),
+            "leituras": [
+                {"tipo": "1ª Leitura", "texto": safe_extract(d, "primeiraLeitura", "texto"), "ref": safe_extract(d, "primeiraLeitura", "referencia")},
+                {"tipo": "2ª Leitura", "texto": safe_extract(d, "segundaLeitura", "texto"), "ref": safe_extract(d, "segundaLeitura", "referencia")},
+                {"tipo": "Salmo", "texto": safe_extract(d, "salmo", "texto"), "ref": safe_extract(d, "salmo", "referencia")},
+                {"tipo": "Evangelho", "texto": safe_extract(d, "evangelho", "texto"), "ref": safe_extract(d, "evangelho", "referencia")}
+            ]
+        }, None
+    except Exception as e:
+        return None, str(e)
 
-            with col4:
-                if st.button("👉 Editar", key=f"sel_{vid_id}"):
-                    selecionar_video(vid_id)
+# --- Funções de Navegação ---
+def selecionar_leitura(leitura_data, data_str):
+    """Define qual leitura está sendo trabalhada e redireciona."""
+    st.session_state['leitura_atual'] = leitura_data
+    st.session_state['data_atual_str'] = data_str
+    
+    chave = f"{data_str}-{leitura_data['tipo']}"
+    if chave not in st.session_state['progresso_leituras']:
+        st.session_state['progresso_leituras'][chave] = {'roteiro': False, 'imagens': False, 'audio': False}
+
+def ir_para_pagina(pagina):
+    st.switch_page(pagina)
+
+# --- Interface Principal ---
+init_db()
+st.title("🎛️ Dashboard de Produção")
+
+col_conf, col_dash = st.columns([1, 3])
+
+with col_conf:
+    st.subheader("Data Litúrgica")
+    data_sel = st.date_input("Data", datetime.date.today())
+    data_str = data_sel.strftime("%d/%m/%Y")
+    
+    if st.button("🔄 Buscar/Atualizar Liturgia", type="primary"):
+        with st.spinner("Buscando..."):
+            dados_db = carregar_do_banco(data_str)
+            
+            # Forçar atualização se os dados do banco estiverem no formato antigo
+            if dados_db and 'leituras' not in dados_db:
+                dados_db = None # Força buscar na API novamente para corrigir estrutura
                 
-                if st.button("🗑️ Excluir", key=f"del_{vid_id}"):
-                    excluir_video(vid_id)
+            if dados_db:
+                st.session_state['dados_brutos'] = dados_db
+                st.success("Carregado do Cache")
+            else:
+                dados_api, err = buscar_liturgia_api(data_sel)
+                if dados_api:
+                    salvar_no_banco(dados_api)
+                    st.session_state['dados_brutos'] = dados_api
+                    st.success("Atualizado da API")
+                else:
+                    st.error(f"Erro: {err}")
+
+with col_dash:
+    if 'dados_brutos' in st.session_state:
+        d = st.session_state['dados_brutos']
+        
+        # --- CORREÇÃO DE ERRO (PATCH DE COMPATIBILIDADE) ---
+        # Se os dados carregados forem antigos e não tiverem a chave 'leituras', cria-se agora.
+        if 'leituras' not in d:
+            d['leituras'] = [
+                {"tipo": "1ª Leitura", "texto": d.get("primeira_leitura", ""), "ref": d.get("primeira_leitura_ref", "")},
+                {"tipo": "2ª Leitura", "texto": d.get("segunda_leitura", ""), "ref": d.get("segunda_leitura_ref", "")},
+                {"tipo": "Salmo", "texto": d.get("salmo", ""), "ref": d.get("salmo_ref", "")},
+                {"tipo": "Evangelho", "texto": d.get("evangelho", ""), "ref": d.get("evangelho_ref", "")}
+            ]
+            # Atualiza o estado para não rodar isso toda vez
+            st.session_state['dados_brutos'] = d
+        # ----------------------------------------------------
+
+        st.markdown(f"### {d.get('liturgia', 'Liturgia')} ({d.get('cor', '')})")
+        st.divider()
+
+        st.write("#### 🚀 Pipeline de Produção")
+        
+        # Filtra leituras vazias com segurança
+        leituras_validas = [l for l in d.get('leituras', []) if l.get('texto')]
+
+        if not leituras_validas:
+            st.warning("Nenhuma leitura encontrada nos dados. Tente clicar em 'Buscar/Atualizar Liturgia'.")
+
+        for i, leitura in enumerate(leituras_validas):
+            tipo = leitura.get('tipo', 'Leitura')
+            chave = f"{data_str}-{tipo}"
+            progresso = st.session_state['progresso_leituras'].get(chave, {'roteiro': False, 'imagens': False, 'audio': False})
+            
+            c1, c2, c3, c4, c5 = st.columns([2, 3, 1.5, 1.5, 1.5])
+            
+            with c1:
+                st.markdown(f"**{tipo}**")
+            with c2:
+                st.caption(f"{leitura.get('ref', '')}")
+            
+            # Botão ROTEIRO
+            with c3:
+                if st.button(f"📝 Roteiro", key=f"btn_rot_{i}"):
+                    selecionar_leitura(leitura, data_str)
+                    ir_para_pagina("pages/1_Roteiro_Viral.py")
+            
+            # Botão IMAGENS
+            with c4:
+                disabled = not progresso['roteiro']
+                icon = "🎨" if progresso['roteiro'] else "🔒"
+                if st.button(f"{icon} Imagens", key=f"btn_img_{i}", disabled=disabled):
+                    selecionar_leitura(leitura, data_str)
+                    ir_para_pagina("pages/2_Imagens.py")
+
+            # Botão AUDIO
+            with c5:
+                disabled = not progresso['roteiro']
+                icon = "🔊" if progresso['roteiro'] else "🔒"
+                if st.button(f"{icon} Áudio", key=f"btn_aud_{i}", disabled=disabled):
+                    selecionar_leitura(leitura, data_str)
+                    ir_para_pagina("pages/3_Audio_TTS.py")
             
             st.markdown("---")
-
-# Rodapé de depuração (opcional)
-if st.session_state.video_atual_id:
-    st.success(f"Editando projeto atual: {canal['videos'][st.session_state.video_atual_id]['titulo']}")
+            
+    else:
+        st.info("Selecione uma data e clique em 'Buscar/Atualizar Liturgia' para ver o pipeline.")
