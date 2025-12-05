@@ -1,0 +1,13 @@
+streamlit
+google-api-python-client
+plotly
+pandas
+numpy
+requests
+pillow
+edge-tts
+moviepy
+groq
+piper-tts
+piper
+ffmpeg-python
