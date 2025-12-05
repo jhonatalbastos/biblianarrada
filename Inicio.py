@@ -1,9 +1,8 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
-import datetime
 import sqlite3
 import json
+import datetime
 
 # --- Configuração da Página ---
 st.set_page_config(
@@ -14,6 +13,7 @@ st.set_page_config(
 
 # --- Configuração do Banco de Dados (SQLite) ---
 def init_db():
+    """Cria o banco de dados local se não existir."""
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
     c.execute('''
@@ -29,16 +29,21 @@ def init_db():
     conn.close()
 
 def salvar_no_banco(dados):
+    """Salva o retorno da API no banco local."""
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
+    # Serializa o dicionário inteiro para JSON para salvar no banco
+    json_str = json.dumps(dados, ensure_ascii=False)
+    
     c.execute('''
         INSERT OR REPLACE INTO historico (data_liturgia, santo, cor, json_completo)
         VALUES (?, ?, ?, ?)
-    ''', (dados['data'], dados['santo'], dados['cor'], json.dumps(dados)))
+    ''', (dados['data'], dados['liturgia'], dados['cor'], json_str))
     conn.commit()
     conn.close()
 
 def carregar_do_banco(data_str):
+    """Tenta recuperar dados salvos anteriormente."""
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
     c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
@@ -49,164 +54,155 @@ def carregar_do_banco(data_str):
     return None
 
 def listar_historico():
+    """Lista as últimas pesquisas para o menu lateral."""
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
-    c.execute('SELECT data_liturgia, santo FROM historico ORDER BY data_liturgia DESC LIMIT 10')
+    c.execute('SELECT data_liturgia, santo FROM historico ORDER BY data_acesso DESC LIMIT 10')
     items = c.fetchall()
     conn.close()
     return items
 
-# Inicializa o DB
+# Inicializa o DB ao abrir a página
 init_db()
 
-# --- Função de Scraping Robusta ---
-def get_liturgia_cancaonova(data_obj):
-    # Mapeamento estrito para o padrão de URL da Canção Nova (sem acentos)
-    meses = {
-        1: 'janeiro', 2: 'fevereiro', 3: 'marco', 4: 'abril',
-        5: 'maio', 6: 'junho', 7: 'julho', 8: 'agosto',
-        9: 'setembro', 10: 'outubro', 11: 'novembro', 12: 'dezembro'
-    }
-    
-    # Formatação: Dia sem zero à esquerda (int), Mês por extenso, Ano de 4 dígitos
-    dia = int(data_obj.day) 
-    mes_nome = meses[data_obj.month]
+# --- Função de Consumo da API ---
+def buscar_liturgia_api(data_obj):
+    """
+    Consome a API pública de Liturgia Diária.
+    URL Base utilizada: liturgia.up.railway.app (fork estável do projeto vercel)
+    """
+    dia = data_obj.day
+    mes = data_obj.month
     ano = data_obj.year
     
-    # URL Padrão: https://liturgia.cancaonova.com/pb/liturgia/d/5-dezembro-2023/
-    url = f"https://liturgia.cancaonova.com/pb/liturgia/d/{dia}-{mes_nome}-{ano}/"
-    
-    # Headers para simular um navegador real (evita bloqueios 403/404 falsos)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    }
+    # Endpoint padrão da comunidade open-source
+    url = f"https://liturgia.up.railway.app/{dia}-{mes}-{ano}"
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, timeout=15)
         
-        # Se der erro 404, verifica se é uma data muito distante
         if response.status_code == 404:
-            return None, f"Liturgia não encontrada (404). O site ainda não disponibilizou esta data ou a URL mudou. URL tentada: {url}"
+            return None, "Liturgia não encontrada. Motivo provável: A data é muito futura e a CNBB ainda não disponibilizou os textos."
         
         if response.status_code != 200:
-            return None, f"Erro ao acessar site (Status: {response.status_code})"
+            return None, f"Erro na API (Status: {response.status_code})"
 
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        # --- Extração dos Dados ---
+        # A API retorna exatamente o JSON que você descreveu
+        dados_json = response.json()
         
-        # 1. Santo / Título
-        titulo_elem = soup.find('h1', class_='entry-title')
-        santo = titulo_elem.get_text(strip=True) if titulo_elem else "Liturgia do Dia"
+        # Tratamento de dados para garantir que campos opcionais não quebrem o app
+        resultado_processado = {
+            "data": dados_json.get("data", f"{dia:02d}/{mes:02d}/{ano}"),
+            "liturgia": dados_json.get("liturgia", "Liturgia Diária"),
+            "cor": dados_json.get("cor", "Não informada"),
+            "primeira_leitura": dados_json.get("primeiraLeitura", {}).get("texto", ""),
+            "primeira_leitura_ref": dados_json.get("primeiraLeitura", {}).get("referencia", ""),
+            "salmo": dados_json.get("salmo", {}).get("texto", ""),
+            "salmo_ref": dados_json.get("salmo", {}).get("referencia", ""),
+            "segunda_leitura": dados_json.get("segundaLeitura", {}).get("texto", "Não há segunda leitura hoje."), # Opcional
+            "evangelho": dados_json.get("evangelho", {}).get("texto", ""),
+            "evangelho_ref": dados_json.get("evangelho", {}).get("referencia", ""),
+            "santo": dados_json.get("liturgia", "Liturgia Diária") # Alias para compatibilidade
+        }
 
-        # 2. Conteúdo Principal
-        conteudo_div = soup.find('div', class_='entry-content')
-        if not conteudo_div:
-            return None, "Estrutura do site mudou (conteúdo não achado)."
-
-        texto_bruto = conteudo_div.get_text(separator="\n")
-        
-        # 3. Lógica de Separação (Evangelho vs Leitura)
-        # Tenta achar marcadores comuns no texto
-        evangelho = ""
-        primeira_leitura = ""
-        
-        # Estratégia simples de split
-        if "Evangelho" in texto_bruto:
-            partes = texto_bruto.split("Evangelho", 1) # Divide na primeira ocorrência
-            primeira_leitura = partes[0].strip()
-            # Pega o restante como Evangelho, limpando cabeçalhos comuns
-            evangelho_raw = partes[1].strip()
-            # Remove sufixos comuns de reflexão se existirem (Opcional, refinamento)
-            evangelho = evangelho_raw 
-        else:
-            evangelho = texto_bruto # Se não achar a divisória, traz tudo
-
-        # Limpeza básica de strings
-        evangelho = evangelho.replace("—", "").strip()
-
-        return {
-            "data": data_obj.strftime("%d/%m/%Y"),
-            "url_origem": url,
-            "santo": santo,
-            "cor": "Litúrgica", # O site nem sempre expõe a cor em texto fácil
-            "primeira_leitura": primeira_leitura[:1500], # Limite de segurança
-            "evangelho": evangelho[:3000], 
-            "reflexao": "" # Deixamos vazio para a IA preencher depois se necessário
-        }, None
+        return resultado_processado, None
 
     except Exception as e:
-        return None, f"Erro técnico: {str(e)}"
+        return None, f"Erro de conexão: {str(e)}"
 
-# --- Interface do Usuário ---
-st.title("🙏 Liturgia Diária & Roteiros")
-st.markdown("Busque a liturgia de qualquer data para gerar conteúdo.")
+# --- Interface do Usuário (Streamlit) ---
+st.title("🙏 Liturgia Diária (Via API)")
+st.markdown("Busca estruturada de dados litúrgicos para geração de roteiros.")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("📅 Selecione a Data")
-    data_selecionada = st.date_input("Data da Liturgia", datetime.date.today())
-    data_str_formatada = data_selecionada.strftime("%d/%m/%Y")
+    st.subheader("📅 Configuração")
+    # Input de Data
+    data_selecionada = st.date_input("Escolha a Data", datetime.date.today())
     
-    # Botão de Busca
-    if st.button("🔍 Buscar Liturgia", use_container_width=True):
-        with st.spinner(f"Buscando liturgia de {data_str_formatada}..."):
+    # Formatação da data para chave do banco (DD/MM/YYYY)
+    data_chave = data_selecionada.strftime("%d/%m/%Y")
+    
+    # Botão Principal
+    if st.button("🔍 Buscar Liturgia", use_container_width=True, type="primary"):
+        with st.spinner("Conectando à API de Liturgia..."):
             
-            # 1. Tenta carregar do banco local primeiro
-            dados_db = carregar_do_banco(data_str_formatada)
+            # 1. Verifica Cache Local (Banco de Dados)
+            dados_db = carregar_do_banco(data_chave)
             
             if dados_db:
                 st.session_state['dados_liturgia'] = dados_db
-                st.success("✅ Carregado do Histórico Local!")
+                st.success("✅ Dados carregados do banco local!")
             else:
-                # 2. Busca na Web
-                dados_web, erro = get_liturgia_cancaonova(data_selecionada)
+                # 2. Busca na API Online
+                dados_api, erro = buscar_liturgia_api(data_selecionada)
                 
-                if dados_web:
-                    salvar_no_banco(dados_web)
-                    st.session_state['dados_liturgia'] = dados_web
-                    st.success("✅ Liturgia encontrada e salva!")
+                if dados_api:
+                    salvar_no_banco(dados_api)
+                    st.session_state['dados_liturgia'] = dados_api
+                    st.success("✅ Liturgia obtida da API com sucesso!")
                 else:
                     st.error(f"❌ {erro}")
-                    st.info("Dica: Tente selecionar uma data passada ou a data de hoje.")
+                    st.warning("Nota: Se você escolheu uma data muito distante (ex: final de 2025), a fonte oficial pode ainda não ter liberado os textos.")
 
     st.divider()
     
-    st.subheader("📂 Histórico")
-    itens_historico = listar_historico()
-    if itens_historico:
-        for data_h, santo_h in itens_historico:
-            if st.button(f"📄 {data_h} - {santo_h}", key=data_h):
-                dados_recuperados = carregar_do_banco(data_h)
-                st.session_state['dados_liturgia'] = dados_recuperados
+    # Histórico Lateral
+    st.subheader("📂 Histórico Salvo")
+    historico = listar_historico()
+    if historico:
+        for data_h, titulo_h in historico:
+            if st.button(f"🔄 {data_h}", key=data_h, help=titulo_h):
+                dados_rec = carregar_do_banco(data_h)
+                st.session_state['dados_liturgia'] = dados_rec
                 st.rerun()
     else:
-        st.caption("Seu histórico de pesquisas aparecerá aqui.")
+        st.caption("Nenhuma pesquisa salva.")
 
 with col2:
     if 'dados_liturgia' in st.session_state:
         d = st.session_state['dados_liturgia']
         
-        st.info(f"Visualizando: **{d['data']}**")
-        st.markdown(f"## {d['santo']}")
+        # Cabeçalho da Visualização
+        st.markdown(f"### {d['liturgia']}")
+        st.caption(f"📅 **Data:** {d['data']} | 🎨 **Cor:** {d['cor']}")
         
-        tab1, tab2 = st.tabs(["📖 Evangelho", "📜 Primeira Leitura"])
+        # Abas para organizar o conteúdo
+        tab1, tab2, tab3, tab4 = st.tabs(["📖 Evangelho", "📜 1ª Leitura", "🎶 Salmo", "⛪ 2ª Leitura"])
         
         with tab1:
-            st.write(d['evangelho'])
+            st.markdown(f"**Referência:** *{d['evangelho_ref']}*")
+            st.info(d['evangelho'])
+        
         with tab2:
+            st.markdown(f"**Referência:** *{d['primeira_leitura_ref']}*")
             st.write(d['primeira_leitura'])
             
+        with tab3:
+            st.markdown(f"**Referência:** *{d['salmo_ref']}*")
+            st.write(d['salmo'])
+            
+        with tab4:
+            if "Não há" in d['segunda_leitura']:
+                st.caption(d['segunda_leitura'])
+            else:
+                st.write(d['segunda_leitura'])
+        
         st.divider()
         
-        col_btn_1, col_btn_2 = st.columns([1, 3])
-        with col_btn_2:
-            if st.button("✨ Ir para Gerador de Roteiro Viral ➡️", type="primary", use_container_width=True):
-                st.switch_page("pages/1_Roteiro_Viral.py")
+        # Botão de Ação
+        st.success("Dados estruturados prontos para o roteiro.")
+        if st.button("✨ Gerar Roteiro Viral ➡️", use_container_width=True):
+            st.switch_page("pages/1_Roteiro_Viral.py")
             
     else:
-        st.warning("👈 Selecione uma data e clique em buscar para começar.")
-        # Espaço vazio ou imagem ilustrativa
-        st.empty()
+        # Estado Inicial
+        st.info("👈 Selecione uma data e clique em 'Buscar Liturgia'.")
+        st.markdown("""
+        **Como funciona esta versão:**
+        1. O sistema consulta uma **API JSON** especializada.
+        2. Obtém textos separados (Evangelho, Salmo, Leitura).
+        3. Salva tudo no seu banco de dados local.
+        4. Envia os dados limpos para o gerador de roteiro.
+        """)
