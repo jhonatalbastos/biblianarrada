@@ -1,158 +1,109 @@
 import streamlit as st
-from groq import Groq
-import json
-import os
+import time
 
-# Configuração da Página
-st.set_page_config(
-    page_title="Roteiro Viral - Bíblia Narrada",
-    page_icon="✍️",
-    layout="wide"
-)
+st.set_page_config(page_title="Gerar Roteiro", page_icon="📝", layout="wide")
 
-# Título e Descrição
-st.title("✍️ Gerador de Roteiro Viral")
-st.markdown("""
-Transforme a Liturgia Diária em um roteiro curto, impactante e pronto para **Reels, TikTok e Shorts**.
-A IA analisará o Evangelho e criará uma narrativa que conecta a mensagem milenar com dores e desejos modernos.
-""")
-
-st.divider()
-
-# --- Configuração da API Key ---
-api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
-
-if not api_key:
-    st.error("❌ Chave da API Groq não encontrada. Configure-a nos 'secrets' do Streamlit.")
+if 'leitura_atual' not in st.session_state:
+    st.warning("Nenhuma leitura selecionada. Volte ao Início.")
+    if st.button("🏠 Voltar ao Início"):
+        st.switch_page("Inicio.py")
     st.stop()
 
-client = Groq(api_key=api_key)
+leitura = st.session_state['leitura_atual']
+data_str = st.session_state.get('data_atual_str', '')
+chave_progresso = f"{data_str}-{leitura['tipo']}"
 
-# --- Função de Geração de Roteiro ---
-def gerar_roteiro_liturgico(dados_liturgia):
-    """
-    Gera um roteiro viral baseado nos dados da liturgia usando Llama 3.
-    """
-    
-    # Prompt do Sistema (A "Persona" da IA)
-    prompt_system = """
-    Você é um especialista em Copywriting para Redes Sociais Católicas e Roteirista de Vídeos Curtos (Reels/TikTok).
-    Sua missão é traduzir a profundidade teológica do Evangelho em uma linguagem simples, magnética e viral, sem perder a sacralidade.
-    
-    ESTRUTURA OBRIGATÓRIA DO ROTEIRO (JSON):
-    1. "hook_visual": Descrição da cena inicial (3s) para prender atenção visualmente.
-    2. "headline": A frase falada nos primeiros 3 segundos (O Gancho). Deve tocar numa dor ou curiosidade.
-    3. "corpo": O desenvolvimento da mensagem (máximo 40 segundos). Use storytelling.
-    4. "cta": Chamada para ação clara (Ex: "Comente 'Amém' se você crê").
-    5. "legenda": Sugestão de legenda para o post com hashtags.
-    6. "prompt_imagem": Um prompt detalhado para gerar uma imagem de capa ou fundo usando IA (estilo cinematográfico, realista).
-    
-    TOM DE VOZ:
-    - Próximo, acolhedor, mas com autoridade espiritual.
-    - Evite "evangeliquês" difícil. Use analogias do dia a dia.
-    - Foco na transformação: Do sofrimento para a esperança.
-    """
+st.title(f"📝 Roteiro: {leitura['tipo']}")
+st.caption(f"Referência: {leitura['ref']}")
 
-    # Prompt do Usuário (O Conteúdo)
-    prompt_user = f"""
-    Crie um roteiro viral para o Evangelho de hoje.
-    
-    DADOS DA LITURGIA:
-    Data: {dados_liturgia.get('data', 'Hoje')}
-    Cor Litúrgica: {dados_liturgia.get('cor', 'N/A')}
-    Santo do Dia: {dados_liturgia.get('santo', 'N/A')}
-    
-    PRIMEIRA LEITURA (Resumo): {dados_liturgia.get('primeira_leitura', '')[:500]}...
-    
-    EVANGELHO COMPLETO:
-    {dados_liturgia.get('evangelho', '')}
-    
-    REFLEXÃO/HOMILIA BASE:
-    {dados_liturgia.get('reflexao', '')[:1000]}...
-    
-    Retorne APENAS um objeto JSON válido.
-    """
+# Layout: Texto Original vs Roteiro Gerado
+c1, c2 = st.columns(2)
 
-    try:
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": prompt_system},
-                {"role": "user", "content": prompt_user}
-            ],
-            # --- ATUALIZAÇÃO DO MODELO AQUI ---
-            model="llama-3.3-70b-versatile", 
-            # ----------------------------------
-            temperature=0.7,
-            max_tokens=2000,
-            response_format={"type": "json_object"}
-        )
-        return json.loads(chat_completion.choices[0].message.content)
-    except Exception as e:
-        st.error(f"Erro ao conectar com a IA: {e}")
-        return None
+with c1:
+    st.subheader("Texto Bíblico Original")
+    with st.container(height=500):
+        st.write(leitura['texto'])
 
-# --- Interface Principal ---
-
-# Verifica se há dados na sessão (vindos da Home)
-if "dados_liturgia" not in st.session_state:
-    st.warning("⚠️ Nenhuma liturgia carregada. Por favor, vá para a **Página Inicial (Início)** e carregue a liturgia do dia primeiro.")
-    if st.button("Ir para Início"):
-        st.switch_page("Inicio.py") # Ajuste se o nome do arquivo principal for diferente
-else:
-    dados = st.session_state["dados_liturgia"]
+with c2:
+    st.subheader("Roteiro Viral (5 Blocos)")
     
-    # Exibe resumo do que foi carregado
-    st.success(f"📖 Liturgia carregada: {dados.get('data')} - {dados.get('santo')}")
+    # Placeholder para simular IA
+    def simular_ia(prompt_type, texto_base):
+        time.sleep(1) # Simula tempo de processamento
+        return f"[Conteúdo Gerado por IA para {prompt_type}]\nBaseado em: {texto_base[:50]}..."
+
+    # Formulário para geração
+    with st.form("form_roteiro"):
+        st.info("A IA irá estruturar o texto em 5 blocos: Hook, Leitura, Reflexão, Aplicação, Oração.")
+        submitted = st.form_submit_button("✨ Gerar Roteiro Agora")
     
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.info("💡 **Dica:** O roteiro é gerado focado em retenção. Leia em voz alta para testar o ritmo.")
-        if st.button("✨ Gerar Roteiro Viral", type="primary", use_container_width=True):
-            with st.spinner("A IA está escrevendo seu roteiro..."):
-                roteiro_gerado = gerar_roteiro_liturgico(dados)
-                
-                if roteiro_gerado:
-                    st.session_state["roteiro_atual"] = roteiro_gerado
-                    st.rerun() # Recarrega para mostrar o resultado
+    if submitted:
+        progress = st.progress(0, text="Analisando texto...")
+        
+        # Bloco 1: Hook
+        progress.progress(20, text="Criando Hook Viral...")
+        b1 = simular_ia("Hook + CTA", leitura['texto'])
+        
+        # Bloco 2: Leitura (Geralmente é o texto original ou resumido)
+        progress.progress(40, text="Formatando Leitura...")
+        b2 = leitura['texto'] 
+        
+        # Bloco 3: Reflexão
+        progress.progress(60, text="Escrevendo Reflexão Teológica...")
+        b3 = simular_ia("Reflexão Curta", leitura['texto'])
+        
+        # Bloco 4: Aplicação
+        progress.progress(80, text="Criando Aplicação Prática...")
+        b4 = simular_ia("Aplicação Prática", leitura['texto'])
+        
+        # Bloco 5: Oração
+        progress.progress(95, text="Finalizando com Oração...")
+        b5 = simular_ia("Oração Final", leitura['texto'])
+        
+        progress.progress(100, text="Concluído!")
+        
+        # Salvar no Session State
+        st.session_state['roteiro_gerado'] = {
+            "hook": b1,
+            "leitura": b2,
+            "reflexao": b3,
+            "aplicacao": b4,
+            "oracao": b5
+        }
+        
+        # Atualizar status no Pipeline
+        if 'progresso_leituras' in st.session_state:
+             if chave_progresso not in st.session_state['progresso_leituras']:
+                 st.session_state['progresso_leituras'][chave_progresso] = {}
+             st.session_state['progresso_leituras'][chave_progresso]['roteiro'] = True
 
-    with col2:
-        if "roteiro_atual" in st.session_state:
-            r = st.session_state["roteiro_atual"]
-            
-            st.subheader("🎬 Seu Roteiro")
-            
-            # Exibição visual do Roteiro
-            container = st.container(border=True)
-            container.markdown(f"**🎥 Gancho Visual:** `{r.get('hook_visual')}`")
-            container.markdown(f"**🗣️ Headline (Fale isso):** \n> ## {r.get('headline')}")
-            container.markdown(f"**📜 Corpo do Texto:** \n\n{r.get('corpo')}")
-            container.markdown(f"**🔥 Chamada para Ação (CTA):** `{r.get('cta')}`")
-            
-            st.divider()
-            
-            with st.expander("📝 Legenda e Hashtags"):
-                st.code(r.get('legenda'), language="text")
-                
-            with st.expander("🎨 Prompt para Imagem (Midjourney/DALL-E)"):
-                st.code(r.get('prompt_imagem'), language="text")
-                
-            # Botão de Download (Opcional, salva como TXT)
-            texto_download = f"""ROTEIRO VIRAL - {dados.get('data')}
-            
-HEADLINE: {r.get('headline')}
+        st.rerun()
 
-CORPO:
-{r.get('corpo')}
-
-CTA: {r.get('cta')}
-
-LEGENDA:
-{r.get('legenda')}
-            """
-            st.download_button(
-                label="📥 Baixar Roteiro (.txt)",
-                data=texto_download,
-                file_name=f"roteiro_viral_{dados.get('data').replace('/', '-')}.txt",
-                mime="text/plain"
-            )
+    # Exibir Roteiro se já existir
+    if 'roteiro_gerado' in st.session_state:
+        rg = st.session_state['roteiro_gerado']
+        
+        st.success("Roteiro Gerado com Sucesso!")
+        
+        st.markdown("**1. Hook + CTA**")
+        st.text_area("Bloco 1", rg['hook'], height=100)
+        
+        st.markdown("**2. Leitura**")
+        st.text_area("Bloco 2", rg['leitura'], height=150)
+        
+        st.markdown("**3. Reflexão**")
+        st.text_area("Bloco 3", rg['reflexao'], height=150)
+        
+        st.markdown("**4. Aplicação**")
+        st.text_area("Bloco 4", rg['aplicacao'], height=100)
+        
+        st.markdown("**5. Oração**")
+        st.text_area("Bloco 5", rg['oracao'], height=100)
+        
+        col_nav1, col_nav2 = st.columns(2)
+        with col_nav1:
+            if st.button("🎨 Ir para Geração de Imagens", type="primary", use_container_width=True):
+                st.switch_page("pages/2_Imagens.py")
+        with col_nav2:
+             if st.button("🏠 Voltar ao Dashboard", use_container_width=True):
+                st.switch_page("Inicio.py")
