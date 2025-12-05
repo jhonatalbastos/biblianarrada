@@ -38,7 +38,9 @@ def carregar_do_banco(data_str):
     c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
     res = c.fetchone()
     conn.close()
-    return json.loads(res[0]) if res else None
+    if res:
+        return json.loads(res[0])
+    return None
 
 def safe_extract(source, key, sub_key="texto"):
     val = source.get(key)
@@ -73,13 +75,15 @@ def buscar_liturgia_api(data_obj):
 
 # --- Navegação ---
 def selecionar_leitura(leitura_data, data_str, cor_liturgica="N/A"):
-    st.session_state['leitura_atual'] = lectura_data = leitura_data.copy()
-    st.session_state['leitura_atual']['cor_liturgica'] = cor_liturgica # Passa a cor para o overlay
+    """Define qual leitura está sendo trabalhada e inicializa o progresso."""
+    lectura_data = leitura_data.copy()
+    lectura_data['cor_liturgica'] = cor_liturgica # Passa a cor para o overlay
+    
+    st.session_state['leitura_atual'] = lectura_data
     st.session_state['data_atual_str'] = data_str
     
     chave = f"{data_str}-{leitura_data['tipo']}"
     if chave not in st.session_state['progresso_leituras']:
-        # Inicializa com todas as etapas novas
         st.session_state['progresso_leituras'][chave] = {
             'roteiro': False, 'imagens': False, 'audio': False,
             'overlay': False, 'legendas': False, 'video': False, 'publicacao': False
@@ -95,14 +99,13 @@ st.title("🎛️ Dashboard de Produção")
 col_conf, col_dash = st.columns([1, 4])
 
 with col_conf:
-    st.subheader("Data")
-    data_sel = st.date_input("Selecionar", datetime.date.today())
+    st.subheader("Data Litúrgica")
+    data_sel = st.date_input("Data", datetime.date.today())
     data_str = data_sel.strftime("%d/%m/%Y")
     
     if st.button("🔄 Buscar Liturgia", type="primary", use_container_width=True):
         with st.spinner("Buscando..."):
             dados_db = carregar_do_banco(data_str)
-            # Patch de compatibilidade para estrutura antiga
             if dados_db and 'leituras' not in dados_db: dados_db = None 
             
             if dados_db:
@@ -120,7 +123,6 @@ with col_conf:
 with col_dash:
     if 'dados_brutos' in st.session_state:
         d = st.session_state['dados_brutos']
-        # Patch de compatibilidade
         if 'leituras' not in d:
             st.warning("Dados antigos detectados. Por favor, clique em buscar novamente.")
             st.stop()
@@ -147,11 +149,9 @@ with col_dash:
             tipo = leitura.get('tipo', 'Leitura')
             chave = f"{data_str}-{tipo}"
             
-            # Garante que chaves novas existam para leituras antigas
             default_prog = {'roteiro': False, 'imagens': False, 'audio': False, 'overlay': False, 'legendas': False, 'video': False, 'publicacao': False}
             progresso = st.session_state['progresso_leituras'].get(chave, default_prog)
             
-            # Linha da Tabela
             c = st.columns([2, 2, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8])
             
             with c[0]: st.markdown(f"**{tipo}**")
@@ -159,25 +159,22 @@ with col_dash:
 
             # Botões de Ação
             def check_btn(label, key_suffix, page, enabled, icon_on, icon_off):
-                icon = icon_on if enabled else icon_off
+                icon = icon_on if progresso.get(key_suffix, False) else icon_off
                 disabled = not enabled
                 if st.button(icon, key=f"{key_suffix}_{i}", disabled=disabled, help=label):
                     selecionar_leitura(leitura, data_str, d.get('cor', 'N/A'))
-                    ir_para_pagina(page)
+                    # Define a página atual para que a navegação saiba para onde ir
+                    st.switch_page(page)
 
-            with c[2]: check_btn("Roteiro", "rot", "pages/1_Roteiro_Viral.py", True, "📝", "📝")
-            with c[3]: check_btn("Imagens", "img", "pages/2_Imagens.py", progresso['roteiro'], "🎨", "🔒")
-            with c[4]: check_btn("Áudio", "aud", "pages/3_Audio_TTS.py", progresso['roteiro'], "🔊", "🔒")
-            
-            # Etapas de Montagem (Dependem de Audio e Imagens estarem prontos)
             midia_pronta = progresso['imagens'] and progresso['audio']
             
-            with c[5]: check_btn("Overlay", "ovr", "pages/4_Overlay.py", midia_pronta, "🖼️", "🔒")
-            with c[6]: check_btn("Legendas", "leg", "pages/5_Legendas.py", midia_pronta, "💬", "🔒")
-            with c[7]: check_btn("Vídeo Final", "vid", "pages/6_Video_Final.py", midia_pronta, "🎬", "🔒")
-            
-            # Publicação (Depende do Vídeo)
-            with c[8]: check_btn("Publicar", "pub", "pages/7_Publicar.py", progresso['video'], "🚀", "🔒")
+            with c[2]: check_btn("Roteiro", "roteiro", "pages/1_Roteiro_Viral.py", True, "📝", "📝")
+            with c[3]: check_btn("Imagens", "imagens", "pages/2_Imagens.py", progresso['roteiro'], "🎨", "🔒")
+            with c[4]: check_btn("Áudio", "audio", "pages/3_Audio_TTS.py", progresso['roteiro'], "🔊", "🔒")
+            with c[5]: check_btn("Overlay", "overlay", "pages/4_Overlay.py", midia_pronta, "🖼️", "🔒")
+            with c[6]: check_btn("Legendas", "legendas", "pages/5_Legendas.py", midia_pronta, "💬", "🔒")
+            with c[7]: check_btn("Vídeo Final", "video", "pages/6_Video_Final.py", midia_pronta, "🎬", "🔒")
+            with c[8]: check_btn("Publicar", "publicacao", "pages/7_Publicar.py", progresso['video'], "🚀", "🔒")
             
             st.markdown("---")
             
