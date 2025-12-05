@@ -2,6 +2,69 @@ import streamlit as st
 import time
 
 st.set_page_config(page_title="Gerar Roteiro", page_icon="📝", layout="wide")
+st.session_state['current_page_name'] = 'pages/1_Roteiro_Viral.py'
+
+# --- Utility Function for Navigation Bar (Identical in all pages 1-7) ---
+def render_navigation_bar(current_page_title):
+    progresso_leituras = st.session_state.get('progresso_leituras', {})
+    leitura_atual = st.session_state.get('leitura_atual')
+    data_atual_str = st.session_state.get('data_atual_str')
+    
+    # Check for selected video
+    if not leitura_atual or not data_atual_str:
+        st.error("Nenhuma leitura selecionada. Por favor, volte ao Dashboard (Início).")
+        if st.button("🏠 Voltar ao Início"):
+            st.switch_page("Inicio.py")
+        st.stop()
+        return
+
+    # Key for the currently active production
+    chave_atual = f"{data_atual_str}-{leitura_atual['tipo']}"
+    progresso = progresso_leituras.get(chave_atual, {})
+    
+    # --- Rótulo e Título ---
+    st.markdown("---")
+    st.markdown(f"## {current_page_title}")
+    st.caption(f"📖 Em Produção: **{leitura_atual['tipo']}** ({data_atual_str}) - *Ref: {leitura_atual.get('ref', '')}*")
+
+    # --- Layout da Barra de Navegação de Etapas ---
+    cols_nav = st.columns([1, 1, 1, 1, 1, 1, 1])
+    
+    # Check if the mandatory assets for the subsequent steps are ready
+    midia_pronta = progresso.get('imagens', False) and progresso.get('audio', False)
+
+    stages = [
+        ('Roteiro', 'roteiro', 'pages/1_Roteiro_Viral.py', '📝', '📝', True),
+        ('Imagens', 'imagens', 'pages/2_Imagens.py', '🎨', '🔒', progresso.get('roteiro', False)),
+        ('Áudio', 'audio', 'pages/3_Audio_TTS.py', '🔊', '🔒', progresso.get('roteiro', False)),
+        ('Overlay', 'overlay', 'pages/4_Overlay.py', '🖼️', '🔒', midia_pronta),
+        ('Legendas', 'legendas', 'pages/5_Legendas.py', '💬', '🔒', midia_pronta),
+        ('Vídeo', 'video', 'pages/6_Video_Final.py', '🎬', '🔒', midia_pronta),
+        ('Publicar', 'publicacao', 'pages/7_Publicar.py', '🚀', '🔒', progresso.get('video', False))
+    ]
+
+    # Render Buttons
+    current_page = st.session_state['current_page_name']
+    
+    for i, (label, key, page, icon_on, icon_off, base_enabled) in enumerate(stages):
+        status = progresso.get(key, False)
+        is_current = current_page == page
+        
+        icon = icon_on if status or is_current else icon_off
+        display_icon = f"✅ {icon}" if status and not is_current else icon
+        
+        # Enable logic
+        enabled = base_enabled
+        btn_disabled = not enabled and not status and not is_current
+        
+        with cols_nav[i]:
+            btn_style = "primary" if is_current else "secondary"
+            if st.button(display_icon, key=f"nav_btn_{key}", type=btn_style, disabled=btn_disabled, help=f"{label} ({'Pronto' if status else 'Pendente'})"):
+                st.switch_page(page)
+
+    st.markdown("---")
+# --- End Utility Function ---
+
 
 if 'leitura_atual' not in st.session_state:
     st.warning("Nenhuma leitura selecionada. Volte ao Início.")
@@ -13,8 +76,7 @@ leitura = st.session_state['leitura_atual']
 data_str = st.session_state.get('data_atual_str', '')
 chave_progresso = f"{data_str}-{leitura['tipo']}"
 
-st.title(f"📝 Roteiro: {leitura['tipo']}")
-st.caption(f"Referência: {leitura['ref']}")
+render_navigation_bar("📝 Roteiro Viral")
 
 # Layout: Texto Original vs Roteiro Gerado
 c1, c2 = st.columns(2)
@@ -29,7 +91,7 @@ with c2:
     
     # Placeholder para simular IA
     def simular_ia(prompt_type, texto_base):
-        time.sleep(1) # Simula tempo de processamento
+        time.sleep(0.5) 
         return f"[Conteúdo Gerado por IA para {prompt_type}]\nBaseado em: {texto_base[:50]}..."
 
     # Formulário para geração
@@ -40,41 +102,29 @@ with c2:
     if submitted:
         progress = st.progress(0, text="Analisando texto...")
         
-        # Bloco 1: Hook
         progress.progress(20, text="Criando Hook Viral...")
         b1 = simular_ia("Hook + CTA", leitura['texto'])
         
-        # Bloco 2: Leitura (Geralmente é o texto original ou resumido)
         progress.progress(40, text="Formatando Leitura...")
         b2 = leitura['texto'] 
         
-        # Bloco 3: Reflexão
         progress.progress(60, text="Escrevendo Reflexão Teológica...")
         b3 = simular_ia("Reflexão Curta", leitura['texto'])
         
-        # Bloco 4: Aplicação
         progress.progress(80, text="Criando Aplicação Prática...")
         b4 = simular_ia("Aplicação Prática", leitura['texto'])
         
-        # Bloco 5: Oração
         progress.progress(95, text="Finalizando com Oração...")
         b5 = simular_ia("Oração Final", leitura['texto'])
         
         progress.progress(100, text="Concluído!")
         
-        # Salvar no Session State
         st.session_state['roteiro_gerado'] = {
-            "hook": b1,
-            "leitura": b2,
-            "reflexao": b3,
-            "aplicacao": b4,
-            "oracao": b5
+            "hook": b1, "leitura": b2, "reflexao": b3, "aplicacao": b4, "oracao": b5
         }
         
         # Atualizar status no Pipeline
         if 'progresso_leituras' in st.session_state:
-             if chave_progresso not in st.session_state['progresso_leituras']:
-                 st.session_state['progresso_leituras'][chave_progresso] = {}
              st.session_state['progresso_leituras'][chave_progresso]['roteiro'] = True
 
         st.rerun()
@@ -83,7 +133,7 @@ with c2:
     if 'roteiro_gerado' in st.session_state:
         rg = st.session_state['roteiro_gerado']
         
-        st.success("Roteiro Gerado com Sucesso!")
+        st.success("Roteiro Gerado com Sucesso! Confirme os textos abaixo.")
         
         st.markdown("**1. Hook + CTA**")
         st.text_area("Bloco 1", rg['hook'], height=100)
@@ -100,10 +150,6 @@ with c2:
         st.markdown("**5. Oração**")
         st.text_area("Bloco 5", rg['oracao'], height=100)
         
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("🎨 Ir para Geração de Imagens", type="primary", use_container_width=True):
-                st.switch_page("pages/2_Imagens.py")
-        with col_nav2:
-             if st.button("🏠 Voltar ao Dashboard", use_container_width=True):
-                st.switch_page("Inicio.py")
+        if st.button("🎨 Prosseguir para Imagens", use_container_width=True):
+            st.switch_page("pages/2_Imagens.py")
+
