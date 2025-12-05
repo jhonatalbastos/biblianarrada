@@ -3,27 +3,25 @@ import requests
 import sqlite3
 import json
 import datetime
+import pandas as pd
 
 # --- Configuração da Página ---
-st.set_page_config(
-    page_title="Início - Bíblia Narrada",
-    page_icon="🙏",
-    layout="wide"
-)
+st.set_page_config(page_title="Início - Dashboard", page_icon="🙏", layout="wide")
 
-# --- Configuração do Banco de Dados (SQLite) ---
+# --- Inicialização do Estado (Session State) ---
+if 'progresso_leituras' not in st.session_state:
+    st.session_state['progresso_leituras'] = {} 
+    # Ex: {'05/12/2025-evangelho': {'roteiro': True, 'imagens': False, ...}}
+
+if 'leitura_atual' not in st.session_state:
+    st.session_state['leitura_atual'] = None # Ex: {'tipo': 'Evangelho', 'texto': '...', 'ref': 'Mt...'}
+
+# --- Funções de Banco e API (Mantidas da versão anterior) ---
 def init_db():
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS historico (
-            data_liturgia TEXT PRIMARY KEY,
-            santo TEXT,
-            cor TEXT,
-            json_completo TEXT,
-            data_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    c.execute('''CREATE TABLE IF NOT EXISTS historico 
+                 (data_liturgia TEXT PRIMARY KEY, santo TEXT, cor TEXT, json_completo TEXT, data_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -31,10 +29,8 @@ def salvar_no_banco(dados):
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
     json_str = json.dumps(dados, ensure_ascii=False)
-    c.execute('''
-        INSERT OR REPLACE INTO historico (data_liturgia, santo, cor, json_completo)
-        VALUES (?, ?, ?, ?)
-    ''', (dados['data'], dados['liturgia'], dados['cor'], json_str))
+    c.execute('INSERT OR REPLACE INTO historico (data_liturgia, santo, cor, json_completo) VALUES (?, ?, ?, ?)', 
+              (dados['data'], dados['liturgia'], dados['cor'], json_str))
     conn.commit()
     conn.close()
 
@@ -42,168 +38,127 @@ def carregar_do_banco(data_str):
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
     c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
-    resultado = c.fetchone()
+    res = c.fetchone()
     conn.close()
-    if resultado:
-        return json.loads(resultado[0])
-    return None
+    return json.loads(res[0]) if res else None
 
-def listar_historico():
-    conn = sqlite3.connect('liturgia_db.sqlite')
-    c = conn.cursor()
-    c.execute('SELECT data_liturgia, santo FROM historico ORDER BY data_acesso DESC LIMIT 10')
-    items = c.fetchall()
-    conn.close()
-    return items
+def safe_extract(source, key, sub_key="texto"):
+    val = source.get(key)
+    if val is None: return ""
+    if isinstance(val, str): return "" if sub_key == "referencia" else val
+    return val.get(sub_key, "")
 
-# Inicializa DB
-init_db()
-
-# --- Função Auxiliar de Extração Segura ---
-def safe_extract(source_dict, main_key, sub_key="texto"):
-    """
-    Tenta extrair dados de forma segura, seja string direta ou dicionário aninhado.
-    Evita o erro 'str object has no attribute get'.
-    """
-    val = source_dict.get(main_key)
-    
-    if val is None:
-        return ""
-    
-    # Se o valor já for o texto (string), retorna ele
-    if isinstance(val, str):
-        # Se pedirmos 'referencia' mas o valor é só texto, retornamos vazio
-        if sub_key == "referencia": 
-            return "" 
-        return val
-        
-    # Se for dicionário, acessa a subchave
-    if isinstance(val, dict):
-        return val.get(sub_key, "")
-        
-    return str(val)
-
-# --- Função de Consumo da API ---
 def buscar_liturgia_api(data_obj):
-    dia = data_obj.day
-    mes = data_obj.month
-    ano = data_obj.year
-    
-    # URL da API
+    dia, mes, ano = data_obj.day, data_obj.month, data_obj.year
     url = f"https://liturgia.up.railway.app/{dia}-{mes}-{ano}"
-    
     try:
-        response = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200: return None, "Erro na API"
+        d = resp.json()
         
-        if response.status_code == 404:
-            return None, "Liturgia não encontrada (404). Data futura ou indisponível."
-        
-        if response.status_code != 200:
-            return None, f"Erro na API (Status: {response.status_code})"
-
-        dados_json = response.json()
-        
-        # --- Extração Robusta dos Dados ---
-        # Usa a função safe_extract para garantir que não quebre se vier string
-        
-        resultado_processado = {
-            "data": dados_json.get("data", f"{dia:02d}/{mes:02d}/{ano}"),
-            "liturgia": dados_json.get("liturgia", "Liturgia Diária"),
-            "cor": dados_json.get("cor", "Não informada"),
-            
-            # Extração de Textos
-            "primeira_leitura": safe_extract(dados_json, "primeiraLeitura", "texto"),
-            "salmo": safe_extract(dados_json, "salmo", "texto"),
-            "segunda_leitura": safe_extract(dados_json, "segundaLeitura", "texto"),
-            "evangelho": safe_extract(dados_json, "evangelho", "texto"),
-            
-            # Extração de Referências
-            "primeira_leitura_ref": safe_extract(dados_json, "primeiraLeitura", "referencia"),
-            "salmo_ref": safe_extract(dados_json, "salmo", "referencia"),
-            "evangelho_ref": safe_extract(dados_json, "evangelho", "referencia"),
-            
-            # Alias para compatibilidade
-            "santo": dados_json.get("liturgia", "Liturgia do Dia")
-        }
-
-        # Validação mínima: se não tiver evangelho, algo deu errado
-        if not resultado_processado["evangelho"]:
-             return None, "API retornou dados incompletos (sem Evangelho)."
-
-        return resultado_processado, None
-
+        # Mapeamento para garantir estrutura padrão
+        return {
+            "data": d.get("data", f"{dia:02d}/{mes:02d}/{ano}"),
+            "liturgia": d.get("liturgia", "Liturgia Diária"),
+            "cor": d.get("cor", "N/A"),
+            "santo": d.get("liturgia", ""),
+            "leituras": [
+                {"tipo": "1ª Leitura", "texto": safe_extract(d, "primeiraLeitura", "texto"), "ref": safe_extract(d, "primeiraLeitura", "referencia")},
+                {"tipo": "2ª Leitura", "texto": safe_extract(d, "segundaLeitura", "texto"), "ref": safe_extract(d, "segundaLeitura", "referencia")},
+                {"tipo": "Salmo", "texto": safe_extract(d, "salmo", "texto"), "ref": safe_extract(d, "salmo", "referencia")},
+                {"tipo": "Evangelho", "texto": safe_extract(d, "evangelho", "texto"), "ref": safe_extract(d, "evangelho", "referencia")}
+            ]
+        }, None
     except Exception as e:
-        return None, f"Erro técnico ao processar dados: {str(e)}"
+        return None, str(e)
 
-# --- Interface do Usuário ---
-st.title("🙏 Liturgia Diária (Via API)")
-st.markdown("Busca estruturada de dados litúrgicos.")
-
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    st.subheader("📅 Configuração")
-    data_selecionada = st.date_input("Escolha a Data", datetime.date.today())
-    data_chave = data_selecionada.strftime("%d/%m/%Y")
+# --- Funções de Navegação ---
+def selecionar_leitura(leitura_data, data_str):
+    """Define qual leitura está sendo trabalhada e redireciona."""
+    st.session_state['leitura_atual'] = leitura_data
+    st.session_state['data_atual_str'] = data_str
     
-    if st.button("🔍 Buscar Liturgia", use_container_width=True, type="primary"):
-        with st.spinner("Conectando à API..."):
-            
-            dados_db = carregar_do_banco(data_chave)
-            
+    # Cria chave única para rastrear progresso
+    chave = f"{data_str}-{leitura_data['tipo']}"
+    if chave not in st.session_state['progresso_leituras']:
+        st.session_state['progresso_leituras'][chave] = {'roteiro': False, 'imagens': False, 'audio': False}
+
+def ir_para_pagina(pagina):
+    st.switch_page(pagina)
+
+# --- Interface Principal ---
+init_db()
+st.title("🎛️ Dashboard de Produção")
+
+col_conf, col_dash = st.columns([1, 3])
+
+with col_conf:
+    st.subheader("Data Litúrgica")
+    data_sel = st.date_input("Data", datetime.date.today())
+    data_str = data_sel.strftime("%d/%m/%Y")
+    
+    if st.button("🔄 Buscar/Atualizar Liturgia", type="primary"):
+        with st.spinner("Buscando..."):
+            dados_db = carregar_do_banco(data_str)
             if dados_db:
-                st.session_state['dados_liturgia'] = dados_db
-                st.success("✅ Carregado do banco local!")
+                st.session_state['dados_brutos'] = dados_db
+                st.success("Carregado do Cache")
             else:
-                dados_api, erro = buscar_liturgia_api(data_selecionada)
-                
+                dados_api, err = buscar_liturgia_api(data_sel)
                 if dados_api:
                     salvar_no_banco(dados_api)
-                    st.session_state['dados_liturgia'] = dados_api
-                    st.success("✅ Sucesso!")
+                    st.session_state['dados_brutos'] = dados_api
+                    st.success("Atualizado da API")
                 else:
-                    st.error(f"❌ {erro}")
+                    st.error(f"Erro: {err}")
 
-    st.divider()
-    st.subheader("📂 Histórico")
-    historico = listar_historico()
-    if historico:
-        for data_h, titulo_h in historico:
-            if st.button(f"🔄 {data_h}", key=data_h):
-                dados_rec = carregar_do_banco(data_h)
-                st.session_state['dados_liturgia'] = dados_rec
-                st.rerun()
-
-with col2:
-    if 'dados_liturgia' in st.session_state:
-        d = st.session_state['dados_liturgia']
-        
-        st.markdown(f"### {d['liturgia']}")
-        st.caption(f"📅 **Data:** {d['data']} | 🎨 **Cor:** {d['cor']}")
-        
-        tab1, tab2, tab3, tab4 = st.tabs(["📖 Evangelho", "📜 1ª Leitura", "🎶 Salmo", "⛪ 2ª Leitura"])
-        
-        with tab1:
-            if d['evangelho_ref']: st.markdown(f"**Ref:** *{d['evangelho_ref']}*")
-            st.info(d['evangelho'])
-        
-        with tab2:
-            if d['primeira_leitura_ref']: st.markdown(f"**Ref:** *{d['primeira_leitura_ref']}*")
-            st.write(d['primeira_leitura'])
-            
-        with tab3:
-            if d['salmo_ref']: st.markdown(f"**Ref:** *{d['salmo_ref']}*")
-            st.write(d['salmo'])
-            
-        with tab4:
-            if not d['segunda_leitura']:
-                st.caption("Não há segunda leitura hoje.")
-            else:
-                st.write(d['segunda_leitura'])
-        
+with col_dash:
+    if 'dados_brutos' in st.session_state:
+        d = st.session_state['dados_brutos']
+        st.markdown(f"### {d['liturgia']} ({d['cor']})")
         st.divider()
-        if st.button("✨ Gerar Roteiro Viral ➡️", use_container_width=True):
-            st.switch_page("pages/1_Roteiro_Viral.py")
+
+        # Montar Tabela Visual de Pipeline
+        st.write("#### 🚀 Pipeline de Produção")
+        
+        # Filtra leituras vazias (ex: 2ª leitura em dia de semana)
+        leituras_validas = [l for l in d['leituras'] if l['texto']]
+
+        for i, leitura in enumerate(leituras_validas):
+            chave = f"{data_str}-{leitura['tipo']}"
+            progresso = st.session_state['progresso_leituras'].get(chave, {'roteiro': False, 'imagens': False, 'audio': False})
+            
+            c1, c2, c3, c4, c5 = st.columns([2, 3, 1.5, 1.5, 1.5])
+            
+            with c1:
+                st.markdown(f"**{leitura['tipo']}**")
+            with c2:
+                st.caption(f"{leitura['ref']}")
+            
+            # Botão ROTEIRO
+            with c3:
+                # Sempre habilitado para começar
+                if st.button(f"📝 Roteiro", key=f"btn_rot_{i}"):
+                    selecionar_leitura(leitura, data_str)
+                    ir_para_pagina("pages/1_Roteiro_Viral.py")
+            
+            # Botão IMAGENS
+            with c4:
+                disabled = not progresso['roteiro']
+                icon = "🎨" if progresso['roteiro'] else "🔒"
+                if st.button(f"{icon} Imagens", key=f"btn_img_{i}", disabled=disabled):
+                    selecionar_leitura(leitura, data_str)
+                    ir_para_pagina("pages/2_Imagens.py")
+
+            # Botão AUDIO
+            with c5:
+                disabled = not progresso['roteiro'] # Audio depende do roteiro, não necessariamente das imagens
+                icon = "🔊" if progresso['roteiro'] else "🔒"
+                if st.button(f"{icon} Áudio", key=f"btn_aud_{i}", disabled=disabled):
+                    selecionar_leitura(leitura, data_str)
+                    ir_para_pagina("pages/3_Audio_TTS.py")
+            
+            st.markdown("---")
             
     else:
-        st.info("👈 Selecione uma data para começar.")
+        st.info("Selecione uma data e busque a liturgia para ver o pipeline.")
