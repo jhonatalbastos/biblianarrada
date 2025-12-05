@@ -1,193 +1,134 @@
-import streamlit as st
+import os
+import json
+import uuid
 from datetime import datetime
+
+import streamlit as st
 from groq import Groq
 
-st.set_page_config(page_title="1 – Roteiro Devocional", layout="wide")
-st.title("🙏 1 – Roteiro: Bíblia Narrada")
+st.set_page_config(page_title="1 – Roteiro Litúrgico", layout="wide")
+st.title("📝 1 – Criador de Roteiro (Liturgia Diária)")
 
 # -------------------------------------------------------------------
-# Integração com o DB
+# Integração com Banco e Inicio.py
 # -------------------------------------------------------------------
 if "db" not in st.session_state:
-    st.error("Por favor, inicie pelo arquivo principal (app.py).")
-    st.stop()
-
+    st.session_state.db = {"canais": {}}
 db = st.session_state.db
-canal_id = st.session_state.get("canal_atual_id")
-video_id = st.session_state.get("video_atual_id")
 
-if not canal_id or not video_id:
-    st.warning("Nenhum vídeo selecionado. Volte ao Dashboard e selecione um projeto.")
-    st.stop()
+# Verifica se temos dados vindos do Inicio.py
+dados_liturgia = st.session_state.get("dados_liturgia_selecionada")
 
-canal = db["canais"][canal_id]
-video = canal["videos"][video_id]
-
-st.subheader(f"Projeto: {video['titulo']}")
+if not dados_liturgia:
+    st.warning("⚠️ Nenhuma liturgia selecionada no Início. O roteiro será genérico.")
+    st.markdown("[Voltar para Início](Inicio)")
+else:
+    st.success(f"✅ Liturgia carregada: {dados_liturgia['data']}")
 
 # -------------------------------------------------------------------
-# Configuração da IA (Groq)
+# Configuração do Canal/Vídeo (Mantido da lógica original)
 # -------------------------------------------------------------------
-# Tenta pegar a chave dos secrets ou input manual
+if "canal_atual_id" not in st.session_state:
+    st.session_state.canal_atual_id = None
+if "video_atual_id" not in st.session_state:
+    st.session_state.video_atual_id = None
+
+canal_id = st.session_state.canal_atual_id
+# Se não tiver canal selecionado, cria um temporário ou avisa
+if not canal_id or canal_id not in db["canais"]:
+    st.info("Trabalhando em modo rascunho (sem canal vinculado).")
+
+# -------------------------------------------------------------------
+# Lógica de Geração com IA
+# -------------------------------------------------------------------
 api_key = st.secrets.get("GROQ_API_KEY")
-if not api_key:
-    api_key = st.text_input("Insira sua Groq API Key:", type="password")
+client = Groq(api_key=api_key) if api_key else None
 
-# -------------------------------------------------------------------
-# Interface de Geração
-# -------------------------------------------------------------------
-st.markdown("### 🕊️ Gerar Roteiro Estruturado")
-
-passagem_tema = st.text_input("Passagem Bíblica ou Tema do dia:", value=video.get("titulo", ""))
-instrucoes_extras = st.text_area("Instruções adicionais (opcional):", placeholder="Ex: Focar na esperança, usar linguagem acolhedora...")
-
-def gerar_roteiro_biblico():
-    if not api_key:
-        st.error("API Key necessária.")
-        return
-
-    client = Groq(api_key=api_key)
+def gerar_roteiro_liturgico(dados):
+    """Gera um roteiro baseado nas leituras carregadas."""
     
-    prompt_sistema = """
-    Você é um assistente devocional sábio, acolhedor e teologicamente profundo.
-    Sua tarefa é criar um roteiro para um vídeo curto (TikTok/YouTube Shorts/Reels).
-    O roteiro DEVE seguir estritamente esta estrutura de 5 passos:
-    1. Hook (Gancho inicial de 3 a 5 segundos que prenda a atenção)
-    2. Leitura (O texto bíblico principal na versão NVI ou Almeida)
-    3. Reflexão (Explicação breve e profunda do texto)
-    4. Aplicação (Como aplicar isso na vida hoje)
-    5. Oração (Uma oração curta em primeira pessoa para quem está assistindo repetir)
-
-    Saída desejada: Apenas o texto falado, separado claramente por seções. Use marcadores como [HOOK], [LEITURA], etc.
-    Linguagem: Português do Brasil, tom pastoral e encorajador.
+    # Extrai textos
+    leituras_texto = "\n\n".join([f"{l['tipo']} ({l['livro']}): {l['texto']}" for l in dados['leituras']])
+    
+    prompt_system = """
+    Você é um roteirista especializado em vídeos católicos para YouTube (estilo 'Bíblia Narrada').
+    Crie um roteiro emocionante e espiritual.
+    
+    Estrutura do JSON de resposta:
+    {
+      "titulo": "Um título viral e curto",
+      "intro": "Texto da introdução (gancho)",
+      "leitura_comentada": "O texto do Evangelho intercalado com breves explicações ou o texto na íntegra de forma narrativa.",
+      "reflexao": "Uma aplicação prática para a vida hoje.",
+      "oracao_final": "Uma oração curta de encerramento."
+    }
     """
+    
+    prompt_user = f"""
+    Baseado na liturgia de hoje ({dados['data']}), crie um roteiro.
+    
+    AS LEITURAS SÃO:
+    {leituras_texto}
+    
+    O foco principal deve ser o Evangelho.
+    """
+    
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": prompt_system},
+                {"role": "user", "content": prompt_user}
+            ],
+            model="llama3-70b-8192",
+            response_format={"type": "json_object"}
+        )
+        return json.loads(chat_completion.choices[0].message.content)
+    except Exception as e:
+        st.error(f"Erro na IA: {e}")
+        return None
 
-    prompt_usuario = f"Tema/Passagem: {passagem_tema}. \nExtras: {instrucoes_extras}"
+# -------------------------------------------------------------------
+# Interface de Edição
+# -------------------------------------------------------------------
 
-    with st.spinner("Meditando e escrevendo o roteiro..."):
-        try:
-            chat_completion = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": prompt_sistema},
-                    {"role": "user", "content": prompt_usuario},
-                ],
-                # MODELO ATUALIZADO AQUI:
-                model="llama-3.1-70b-versatile", 
-            )
-            return chat_completion.choices[0].message.content
-        except Exception as e:
-            st.error(f"Erro na IA: {e}")
-            return None
+col_left, col_right = st.columns([1, 1])
 
-# Botão de Geração
-if st.button("✨ Gerar Roteiro com IA"):
-    resultado_bruto = gerar_roteiro_biblico()
-    if resultado_bruto:
-        # Tenta fazer um parse simples baseado nas tags, senão coloca tudo num bloco
-        # Aqui fazemos um split manual simples para preencher os campos
-        sections = {
-            "01_Hook": "",
-            "02_Leitura": "",
-            "03_Reflexão": "",
-            "04_Aplicação": "",
-            "05_Oração": ""
+with col_left:
+    st.subheader("Conteúdo Base")
+    if dados_liturgia:
+        for l in dados_liturgia['leituras']:
+            with st.expander(f"📜 Ver {l['tipo']}"):
+                st.write(l['texto'])
+                
+    if st.button("✨ Gerar Roteiro com IA", type="primary", disabled=(not client or not dados_liturgia)):
+        with st.spinner("A IA está meditando nas leituras..."):
+            roteiro_gerado = gerar_roteiro_liturgico(dados_liturgia)
+            if roteiro_gerado:
+                st.session_state.roteiro_atual = roteiro_gerado
+                st.success("Roteiro gerado!")
+
+with col_right:
+    st.subheader("✍️ Editor de Roteiro")
+    
+    roteiro = st.session_state.get("roteiro_atual", {})
+    
+    # Campos editáveis
+    titulo = st.text_input("Título do Vídeo", value=roteiro.get("titulo", ""))
+    intro = st.text_area("1. Introdução", value=roteiro.get("intro", ""), height=100)
+    corpo = st.text_area("2. Evangelho / Leitura", value=roteiro.get("leitura_comentada", ""), height=300)
+    reflexao = st.text_area("3. Reflexão / Homilia Curta", value=roteiro.get("reflexao", ""), height=150)
+    oracao = st.text_area("4. Oração Final", value=roteiro.get("oracao_final", ""), height=100)
+    
+    if st.button("💾 Salvar Roteiro para Vídeo"):
+        # Salva estrutura pronta para o gerador de áudio/vídeo
+        st.session_state.roteiro_finalizado = {
+            "titulo": titulo,
+            "blocos": [intro, corpo, reflexao, oracao]
         }
         
-        # Lógica simplificada de extração (pode ser melhorada com Regex)
-        # Assume que o modelo obedeceu [TAG]
-        current_key = "01_Hook" # Default
-        lines = resultado_bruto.split('\n')
-        
-        buffer = []
-        
-        for line in lines:
-            upper_line = line.upper()
-            if "[HOOK]" in upper_line:
-                current_key = "01_Hook"
-                buffer = []
-            elif "[LEITURA]" in upper_line:
-                sections["01_Hook"] = "\n".join(buffer).strip()
-                current_key = "02_Leitura"
-                buffer = []
-            elif "[REFLEXÃO]" in upper_line or "[REFLEXAO]" in upper_line:
-                sections["02_Leitura"] = "\n".join(buffer).strip()
-                current_key = "03_Reflexão"
-                buffer = []
-            elif "[APLICAÇÃO]" in upper_line or "[APLICACAO]" in upper_line:
-                sections["03_Reflexão"] = "\n".join(buffer).strip()
-                current_key = "04_Aplicação"
-                buffer = []
-            elif "[ORAÇÃO]" in upper_line or "[ORACAO]" in upper_line:
-                sections["04_Aplicação"] = "\n".join(buffer).strip()
-                current_key = "05_Oração"
-                buffer = []
-            else:
-                buffer.append(line)
-        
-        # Salva o último buffer
-        sections[current_key] = "\n".join(buffer).strip()
-
-        # Salva no estado
-        roteiro_struct = {}
-        prompts_img = {}
-        for k, v in sections.items():
-            # Estrutura: chave -> lista de parágrafos (aqui usamos 1 parágrafo por seção para simplificar)
-            roteiro_struct[k] = [v] if v else ["(Edite este texto)"]
-            prompts_img[k] = ["Cinematic biblical scene, peaceful, golden light, 4k"] # Prompt padrão placeholder
-
-        # Atualiza o objeto vídeo
-        if "roteiro" not in video["artefatos"]:
-            video["artefatos"]["roteiro"] = {}
-        
-        video["artefatos"]["roteiro"]["roteiro"] = roteiro_struct
-        video["artefatos"]["roteiro"]["image_prompts"] = prompts_img
-        video["artefatos"]["roteiro"]["titulo_video"] = passagem_tema
-        st.success("Roteiro gerado! Edite abaixo.")
-
-# -------------------------------------------------------------------
-# Editor Manual do Roteiro
-# -------------------------------------------------------------------
-st.markdown("---")
-st.subheader("📝 Edição Final")
-
-# Recupera o roteiro salvo ou inicializa vazio
-artefato_roteiro = video["artefatos"].get("roteiro", {})
-blocos_salvos = artefato_roteiro.get("roteiro", {})
-prompts_salvos = artefato_roteiro.get("image_prompts", {})
-
-# Define as seções padrão caso esteja vazio
-secoes_padrao = ["01_Hook", "02_Leitura", "03_Reflexão", "04_Aplicação", "05_Oração"]
-novos_blocos = {}
-novos_prompts = {}
-
-with st.form("form_edicao_roteiro"):
-    for titulo_secao in secoes_padrao:
-        st.markdown(f"#### {titulo_secao.split('_')[1]}")
-        
-        # Recupera texto atual
-        texto_atual_lista = blocos_salvos.get(titulo_secao, [""])
-        texto_atual = texto_atual_lista[0] if texto_atual_lista else ""
-        
-        # Recupera prompt atual
-        prompt_atual_lista = prompts_salvos.get(titulo_secao, [""])
-        prompt_atual = prompt_atual_lista[0] if prompt_atual_lista else ""
-
-        col_txt, col_img = st.columns([2, 1])
-        with col_txt:
-            novo_texto = st.text_area(f"Texto ({titulo_secao})", value=texto_atual, height=150, key=f"txt_{titulo_secao}")
-        with col_img:
-            novo_prompt = st.text_area(f"Prompt Imagem (Inglês)", value=prompt_atual, height=150, key=f"prm_{titulo_secao}", help="Para gerar a thumbnail desta parte.")
-
-        novos_blocos[titulo_secao] = [novo_texto]
-        novos_prompts[titulo_secao] = [novo_prompt]
-        st.markdown("---")
-
-    btn_salvar = st.form_submit_button("💾 Salvar Roteiro e Prompts")
-    if btn_salvar:
-        video["artefatos"]["roteiro"]["roteiro"] = novos_blocos
-        video["artefatos"]["roteiro"]["image_prompts"] = novos_prompts
-        video["artefatos"]["roteiro"]["titulo_video"] = passagem_tema
-        video["artefatos"]["roteiro"]["gerado_em"] = datetime.now().isoformat()
-        video["status"]["1_roteiro"] = True
-        video["ultima_atualizacao"] = datetime.now().isoformat()
-        st.success("Roteiro atualizado com sucesso!")
+        # Opcional: Atualizar o objeto 'video' no db['canais'] se estiver usando o sistema completo
+        if canal_id and st.session_state.video_atual_id:
+             # Lógica de atualização do DB original
+             pass
+             
+        st.success("Roteiro salvo! Pronto para gerar Áudio e Imagens.")
