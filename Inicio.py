@@ -7,14 +7,14 @@ import datetime
 # --- Configuração da Página ---
 st.set_page_config(page_title="Início - Dashboard", page_icon="🙏", layout="wide")
 
-# --- Inicialização do Estado (Session State) ---
+# --- Inicialização do Estado ---
 if 'progresso_leituras' not in st.session_state:
     st.session_state['progresso_leituras'] = {} 
 
 if 'leitura_atual' not in st.session_state:
     st.session_state['leitura_atual'] = None 
 
-# --- Funções de Banco e API ---
+# --- Funções Auxiliares (Banco e API) ---
 def init_db():
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
@@ -38,9 +38,7 @@ def carregar_do_banco(data_str):
     c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
     res = c.fetchone()
     conn.close()
-    if res:
-        return json.loads(res[0])
-    return None
+    return json.loads(res[0]) if res else None
 
 def safe_extract(source, key, sub_key="texto"):
     val = source.get(key)
@@ -54,16 +52,10 @@ def buscar_liturgia_api(data_obj):
     url = f"https://liturgia.up.railway.app/{dia}-{mes}-{ano}"
     try:
         resp = requests.get(url, timeout=10)
-        
-        if resp.status_code == 404:
-            return None, "Liturgia não encontrada para esta data."
-        
-        if resp.status_code != 200: 
-            return None, f"Erro na API: {resp.status_code}"
-            
+        if resp.status_code == 404: return None, "Liturgia não encontrada (data futura ou indisponível)."
+        if resp.status_code != 200: return None, f"Erro na API: {resp.status_code}"
         d = resp.json()
         
-        # Mapeamento para garantir estrutura padrão (Novo Formato)
         return {
             "data": d.get("data", f"{dia:02d}/{mes:02d}/{ano}"),
             "liturgia": d.get("liturgia", "Liturgia Diária"),
@@ -79,113 +71,115 @@ def buscar_liturgia_api(data_obj):
     except Exception as e:
         return None, str(e)
 
-# --- Funções de Navegação ---
-def selecionar_leitura(leitura_data, data_str):
-    """Define qual leitura está sendo trabalhada e redireciona."""
-    st.session_state['leitura_atual'] = leitura_data
+# --- Navegação ---
+def selecionar_leitura(leitura_data, data_str, cor_liturgica="N/A"):
+    st.session_state['leitura_atual'] = lectura_data = leitura_data.copy()
+    st.session_state['leitura_atual']['cor_liturgica'] = cor_liturgica # Passa a cor para o overlay
     st.session_state['data_atual_str'] = data_str
     
     chave = f"{data_str}-{leitura_data['tipo']}"
     if chave not in st.session_state['progresso_leituras']:
-        st.session_state['progresso_leituras'][chave] = {'roteiro': False, 'imagens': False, 'audio': False}
+        # Inicializa com todas as etapas novas
+        st.session_state['progresso_leituras'][chave] = {
+            'roteiro': False, 'imagens': False, 'audio': False,
+            'overlay': False, 'legendas': False, 'video': False, 'publicacao': False
+        }
 
 def ir_para_pagina(pagina):
     st.switch_page(pagina)
 
-# --- Interface Principal ---
+# --- Interface ---
 init_db()
 st.title("🎛️ Dashboard de Produção")
 
-col_conf, col_dash = st.columns([1, 3])
+col_conf, col_dash = st.columns([1, 4])
 
 with col_conf:
-    st.subheader("Data Litúrgica")
-    data_sel = st.date_input("Data", datetime.date.today())
+    st.subheader("Data")
+    data_sel = st.date_input("Selecionar", datetime.date.today())
     data_str = data_sel.strftime("%d/%m/%Y")
     
-    if st.button("🔄 Buscar/Atualizar Liturgia", type="primary"):
+    if st.button("🔄 Buscar Liturgia", type="primary", use_container_width=True):
         with st.spinner("Buscando..."):
             dados_db = carregar_do_banco(data_str)
+            # Patch de compatibilidade para estrutura antiga
+            if dados_db and 'leituras' not in dados_db: dados_db = None 
             
-            # Forçar atualização se os dados do banco estiverem no formato antigo
-            if dados_db and 'leituras' not in dados_db:
-                dados_db = None # Força buscar na API novamente para corrigir estrutura
-                
             if dados_db:
                 st.session_state['dados_brutos'] = dados_db
-                st.success("Carregado do Cache")
+                st.success("Cache OK")
             else:
                 dados_api, err = buscar_liturgia_api(data_sel)
                 if dados_api:
                     salvar_no_banco(dados_api)
                     st.session_state['dados_brutos'] = dados_api
-                    st.success("Atualizado da API")
+                    st.success("API OK")
                 else:
                     st.error(f"Erro: {err}")
 
 with col_dash:
     if 'dados_brutos' in st.session_state:
         d = st.session_state['dados_brutos']
-        
-        # --- CORREÇÃO DE ERRO (PATCH DE COMPATIBILIDADE) ---
-        # Se os dados carregados forem antigos e não tiverem a chave 'leituras', cria-se agora.
+        # Patch de compatibilidade
         if 'leituras' not in d:
-            d['leituras'] = [
-                {"tipo": "1ª Leitura", "texto": d.get("primeira_leitura", ""), "ref": d.get("primeira_leitura_ref", "")},
-                {"tipo": "2ª Leitura", "texto": d.get("segunda_leitura", ""), "ref": d.get("segunda_leitura_ref", "")},
-                {"tipo": "Salmo", "texto": d.get("salmo", ""), "ref": d.get("salmo_ref", "")},
-                {"tipo": "Evangelho", "texto": d.get("evangelho", ""), "ref": d.get("evangelho_ref", "")}
-            ]
-            # Atualiza o estado para não rodar isso toda vez
-            st.session_state['dados_brutos'] = d
-        # ----------------------------------------------------
+            st.warning("Dados antigos detectados. Por favor, clique em buscar novamente.")
+            st.stop()
 
         st.markdown(f"### {d.get('liturgia', 'Liturgia')} ({d.get('cor', '')})")
         st.divider()
 
         st.write("#### 🚀 Pipeline de Produção")
-        
-        # Filtra leituras vazias com segurança
         leituras_validas = [l for l in d.get('leituras', []) if l.get('texto')]
 
-        if not leituras_validas:
-            st.warning("Nenhuma leitura encontrada nos dados. Tente clicar em 'Buscar/Atualizar Liturgia'.")
+        # Cabeçalho da Tabela
+        cols = st.columns([2, 2, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8])
+        cols[0].markdown("**Leitura**")
+        cols[1].markdown("**Ref**")
+        cols[2].caption("Roteiro")
+        cols[3].caption("Imagens")
+        cols[4].caption("Áudio")
+        cols[5].caption("Overlay")
+        cols[6].caption("Legenda")
+        cols[7].caption("Vídeo")
+        cols[8].caption("Publicar")
 
         for i, leitura in enumerate(leituras_validas):
             tipo = leitura.get('tipo', 'Leitura')
             chave = f"{data_str}-{tipo}"
-            progresso = st.session_state['progresso_leituras'].get(chave, {'roteiro': False, 'imagens': False, 'audio': False})
             
-            c1, c2, c3, c4, c5 = st.columns([2, 3, 1.5, 1.5, 1.5])
+            # Garante que chaves novas existam para leituras antigas
+            default_prog = {'roteiro': False, 'imagens': False, 'audio': False, 'overlay': False, 'legendas': False, 'video': False, 'publicacao': False}
+            progresso = st.session_state['progresso_leituras'].get(chave, default_prog)
             
-            with c1:
-                st.markdown(f"**{tipo}**")
-            with c2:
-                st.caption(f"{leitura.get('ref', '')}")
+            # Linha da Tabela
+            c = st.columns([2, 2, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8])
             
-            # Botão ROTEIRO
-            with c3:
-                if st.button(f"📝 Roteiro", key=f"btn_rot_{i}"):
-                    selecionar_leitura(leitura, data_str)
-                    ir_para_pagina("pages/1_Roteiro_Viral.py")
-            
-            # Botão IMAGENS
-            with c4:
-                disabled = not progresso['roteiro']
-                icon = "🎨" if progresso['roteiro'] else "🔒"
-                if st.button(f"{icon} Imagens", key=f"btn_img_{i}", disabled=disabled):
-                    selecionar_leitura(leitura, data_str)
-                    ir_para_pagina("pages/2_Imagens.py")
+            with c[0]: st.markdown(f"**{tipo}**")
+            with c[1]: st.caption(f"{leitura.get('ref', '')}")
 
-            # Botão AUDIO
-            with c5:
-                disabled = not progresso['roteiro']
-                icon = "🔊" if progresso['roteiro'] else "🔒"
-                if st.button(f"{icon} Áudio", key=f"btn_aud_{i}", disabled=disabled):
-                    selecionar_leitura(leitura, data_str)
-                    ir_para_pagina("pages/3_Audio_TTS.py")
+            # Botões de Ação
+            def check_btn(label, key_suffix, page, enabled, icon_on, icon_off):
+                icon = icon_on if enabled else icon_off
+                disabled = not enabled
+                if st.button(icon, key=f"{key_suffix}_{i}", disabled=disabled, help=label):
+                    selecionar_leitura(leitura, data_str, d.get('cor', 'N/A'))
+                    ir_para_pagina(page)
+
+            with c[2]: check_btn("Roteiro", "rot", "pages/1_Roteiro_Viral.py", True, "📝", "📝")
+            with c[3]: check_btn("Imagens", "img", "pages/2_Imagens.py", progresso['roteiro'], "🎨", "🔒")
+            with c[4]: check_btn("Áudio", "aud", "pages/3_Audio_TTS.py", progresso['roteiro'], "🔊", "🔒")
+            
+            # Etapas de Montagem (Dependem de Audio e Imagens estarem prontos)
+            midia_pronta = progresso['imagens'] and progresso['audio']
+            
+            with c[5]: check_btn("Overlay", "ovr", "pages/4_Overlay.py", midia_pronta, "🖼️", "🔒")
+            with c[6]: check_btn("Legendas", "leg", "pages/5_Legendas.py", midia_pronta, "💬", "🔒")
+            with c[7]: check_btn("Vídeo Final", "vid", "pages/6_Video_Final.py", midia_pronta, "🎬", "🔒")
+            
+            # Publicação (Depende do Vídeo)
+            with c[8]: check_btn("Publicar", "pub", "pages/7_Publicar.py", progresso['video'], "🚀", "🔒")
             
             st.markdown("---")
             
     else:
-        st.info("Selecione uma data e clique em 'Buscar/Atualizar Liturgia' para ver o pipeline.")
+        st.info("Selecione uma data para iniciar.")
