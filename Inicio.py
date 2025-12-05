@@ -3,7 +3,6 @@ import requests
 import sqlite3
 import json
 import datetime
-import pandas as pd
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Início - Dashboard", page_icon="🙏", layout="wide")
@@ -11,12 +10,11 @@ st.set_page_config(page_title="Início - Dashboard", page_icon="🙏", layout="w
 # --- Inicialização do Estado (Session State) ---
 if 'progresso_leituras' not in st.session_state:
     st.session_state['progresso_leituras'] = {} 
-    # Ex: {'05/12/2025-evangelho': {'roteiro': True, 'imagens': False, ...}}
 
 if 'leitura_atual' not in st.session_state:
-    st.session_state['leitura_atual'] = None # Ex: {'tipo': 'Evangelho', 'texto': '...', 'ref': 'Mt...'}
+    st.session_state['leitura_atual'] = None 
 
-# --- Funções de Banco e API (Mantidas da versão anterior) ---
+# --- Funções de Banco e API ---
 def init_db():
     conn = sqlite3.connect('liturgia_db.sqlite')
     c = conn.cursor()
@@ -40,23 +38,32 @@ def carregar_do_banco(data_str):
     c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
     res = c.fetchone()
     conn.close()
-    return json.loads(res[0]) if res else None
+    if res:
+        return json.loads(res[0])
+    return None
 
 def safe_extract(source, key, sub_key="texto"):
     val = source.get(key)
     if val is None: return ""
     if isinstance(val, str): return "" if sub_key == "referencia" else val
-    return val.get(sub_key, "")
+    if isinstance(val, dict): return val.get(sub_key, "")
+    return str(val)
 
 def buscar_liturgia_api(data_obj):
     dia, mes, ano = data_obj.day, data_obj.month, data_obj.year
     url = f"https://liturgia.up.railway.app/{dia}-{mes}-{ano}"
     try:
         resp = requests.get(url, timeout=10)
-        if resp.status_code != 200: return None, "Erro na API"
+        
+        if resp.status_code == 404:
+            return None, "Liturgia não encontrada para esta data."
+        
+        if resp.status_code != 200: 
+            return None, f"Erro na API: {resp.status_code}"
+            
         d = resp.json()
         
-        # Mapeamento para garantir estrutura padrão
+        # Mapeamento para garantir estrutura padrão (Novo Formato)
         return {
             "data": d.get("data", f"{dia:02d}/{mes:02d}/{ano}"),
             "liturgia": d.get("liturgia", "Liturgia Diária"),
@@ -78,7 +85,6 @@ def selecionar_leitura(leitura_data, data_str):
     st.session_state['leitura_atual'] = leitura_data
     st.session_state['data_atual_str'] = data_str
     
-    # Cria chave única para rastrear progresso
     chave = f"{data_str}-{leitura_data['tipo']}"
     if chave not in st.session_state['progresso_leituras']:
         st.session_state['progresso_leituras'][chave] = {'roteiro': False, 'imagens': False, 'audio': False}
@@ -100,6 +106,11 @@ with col_conf:
     if st.button("🔄 Buscar/Atualizar Liturgia", type="primary"):
         with st.spinner("Buscando..."):
             dados_db = carregar_do_banco(data_str)
+            
+            # Forçar atualização se os dados do banco estiverem no formato antigo
+            if dados_db and 'leituras' not in dados_db:
+                dados_db = None # Força buscar na API novamente para corrigir estrutura
+                
             if dados_db:
                 st.session_state['dados_brutos'] = dados_db
                 st.success("Carregado do Cache")
@@ -115,29 +126,45 @@ with col_conf:
 with col_dash:
     if 'dados_brutos' in st.session_state:
         d = st.session_state['dados_brutos']
-        st.markdown(f"### {d['liturgia']} ({d['cor']})")
+        
+        # --- CORREÇÃO DE ERRO (PATCH DE COMPATIBILIDADE) ---
+        # Se os dados carregados forem antigos e não tiverem a chave 'leituras', cria-se agora.
+        if 'leituras' not in d:
+            d['leituras'] = [
+                {"tipo": "1ª Leitura", "texto": d.get("primeira_leitura", ""), "ref": d.get("primeira_leitura_ref", "")},
+                {"tipo": "2ª Leitura", "texto": d.get("segunda_leitura", ""), "ref": d.get("segunda_leitura_ref", "")},
+                {"tipo": "Salmo", "texto": d.get("salmo", ""), "ref": d.get("salmo_ref", "")},
+                {"tipo": "Evangelho", "texto": d.get("evangelho", ""), "ref": d.get("evangelho_ref", "")}
+            ]
+            # Atualiza o estado para não rodar isso toda vez
+            st.session_state['dados_brutos'] = d
+        # ----------------------------------------------------
+
+        st.markdown(f"### {d.get('liturgia', 'Liturgia')} ({d.get('cor', '')})")
         st.divider()
 
-        # Montar Tabela Visual de Pipeline
         st.write("#### 🚀 Pipeline de Produção")
         
-        # Filtra leituras vazias (ex: 2ª leitura em dia de semana)
-        leituras_validas = [l for l in d['leituras'] if l['texto']]
+        # Filtra leituras vazias com segurança
+        leituras_validas = [l for l in d.get('leituras', []) if l.get('texto')]
+
+        if not leituras_validas:
+            st.warning("Nenhuma leitura encontrada nos dados. Tente clicar em 'Buscar/Atualizar Liturgia'.")
 
         for i, leitura in enumerate(leituras_validas):
-            chave = f"{data_str}-{leitura['tipo']}"
+            tipo = leitura.get('tipo', 'Leitura')
+            chave = f"{data_str}-{tipo}"
             progresso = st.session_state['progresso_leituras'].get(chave, {'roteiro': False, 'imagens': False, 'audio': False})
             
             c1, c2, c3, c4, c5 = st.columns([2, 3, 1.5, 1.5, 1.5])
             
             with c1:
-                st.markdown(f"**{leitura['tipo']}**")
+                st.markdown(f"**{tipo}**")
             with c2:
-                st.caption(f"{leitura['ref']}")
+                st.caption(f"{leitura.get('ref', '')}")
             
             # Botão ROTEIRO
             with c3:
-                # Sempre habilitado para começar
                 if st.button(f"📝 Roteiro", key=f"btn_rot_{i}"):
                     selecionar_leitura(leitura, data_str)
                     ir_para_pagina("pages/1_Roteiro_Viral.py")
@@ -152,7 +179,7 @@ with col_dash:
 
             # Botão AUDIO
             with c5:
-                disabled = not progresso['roteiro'] # Audio depende do roteiro, não necessariamente das imagens
+                disabled = not progresso['roteiro']
                 icon = "🔊" if progresso['roteiro'] else "🔒"
                 if st.button(f"{icon} Áudio", key=f"btn_aud_{i}", disabled=disabled):
                     selecionar_leitura(leitura, data_str)
@@ -161,4 +188,4 @@ with col_dash:
             st.markdown("---")
             
     else:
-        st.info("Selecione uma data e busque a liturgia para ver o pipeline.")
+        st.info("Selecione uma data e clique em 'Buscar/Atualizar Liturgia' para ver o pipeline.")
