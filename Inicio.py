@@ -31,7 +31,7 @@ else:
     st.error("Erro no módulo database.")
     st.stop()
 
-# --- MAPA DE ABREVIAÇÕES (OPCIONAL, PARA EMBELEZAR) ---
+# --- MAPA DE ABREVIAÇÕES ---
 LIVROS_EXTENSO = {
     "Mt": "Mateus", "Mc": "Marcos", "Lc": "Lucas", "Jo": "João",
     "Gn": "Gênesis", "Ex": "Êxodo", "Lv": "Levítico", "Nm": "Números", "Dt": "Deuteronômio",
@@ -48,30 +48,23 @@ LIVROS_EXTENSO = {
 
 def formatar_referencia(ref_bruta, tipo):
     """
-    Formata referências da API v2 (ex: 'Mt 9,35-10,1') para o estilo desejado.
+    Formata referências da API v2 para o estilo desejado.
     """
     if not ref_bruta: return ""
     
-    # Salmo geralmente já vem ok ou precisa de pouco ajuste
     if tipo == "Salmo Responsorial":
         return ref_bruta
 
-    # Tenta expandir abreviações (Ex: "Mt" -> "Mateus")
     partes = ref_bruta.split(" ", 1)
     if len(partes) == 2:
         livro_abrev, resto = partes
-        livro_nome = LIVROS_EXTENSO.get(livro_abrev, livro_abrev) # Se não achar, usa original
+        livro_nome = LIVROS_EXTENSO.get(livro_abrev, livro_abrev)
         texto_ref = f"{livro_nome} {resto}"
     else:
         texto_ref = ref_bruta
 
-    # Formatação especial para Evangelho: "Mateus, Cap. 9..."
     if tipo == "Evangelho":
-        # Remove "São", "Santo" se por acaso vierem (na v2 é raro, mas garante)
         texto_ref = re.sub(r'\b(São|Santo|Santa)\s+', '', texto_ref, flags=re.IGNORECASE)
-        
-        # Insere ", Cap."
-        # Regex: Pega (Nome do Livro) + Espaço + (Número)
         texto_ref = re.sub(r'([A-Za-zÀ-ÿ]+)\s+(\d+)', r'\1, Cap. \2', texto_ref)
 
     return texto_ref
@@ -86,7 +79,6 @@ def get_leitura_status_logic(data_str, tipo_leitura):
     return default, 0
 
 def test_api_connection():
-    # URL padrão da API v2 (Dancrf)
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://liturgia.up.railway.app")
     try:
         from urllib.parse import urlparse
@@ -96,12 +88,11 @@ def test_api_connection():
     except:
         return False
 
-# --- INTEGRAÇÃO COM A API V2 ---
+# --- INTEGRAÇÃO COM A API V2 (CORRIGIDA) ---
 
 def fetch_liturgia(date_obj):
-    # API v2 usa formato DD-MM-YYYY na URL
-    date_str_db = date_obj.strftime('%Y-%m-%d')     # Para salvar no banco (padrão ISO)
-    date_str_api = date_obj.strftime('%d-%m-%Y')    # Para chamar a API
+    # Formato para salvar no banco (ID)
+    date_str_db = date_obj.strftime('%Y-%m-%d')
     
     # 1. Cache Local
     cached = db.carregar_liturgia(date_str_db)
@@ -113,29 +104,33 @@ def fetch_liturgia(date_obj):
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://liturgia.up.railway.app")
     if BASE_URL.endswith('/'): BASE_URL = BASE_URL[:-1]
     
-    # Endpoint da v2: /v2/dia/DD-MM-YYYY
-    API_URL = f"{BASE_URL}/v2/dia/{date_str_api}"
+    # CORREÇÃO: Usando Query Parameters conforme documentação v2
+    # Endpoint: /v2/
+    API_ENDPOINT = f"{BASE_URL}/v2/"
+    
+    params = {
+        "dia": date_obj.day,
+        "mes": date_obj.month,
+        "ano": date_obj.year
+    }
 
     try:
-        response = requests.get(API_URL, timeout=15)
+        # requests.get cuida de montar a URL ?dia=X&mes=Y&ano=Z
+        response = requests.get(API_ENDPOINT, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         
         leituras_formatadas = []
         
-        # Na v2, a cor e o dia costumam estar na raiz ou chaves específicas
         cor_liturgica = data.get('cor', 'Verde')
-        nome_dia = data.get('dia', 'Dia Litúrgico')
+        nome_dia = data.get('dia', 'Dia Litúrgico') # O campo 'dia' na resposta costuma vir o nome do santo ou festa
 
-        # Função helper para extrair da estrutura v2
         def extrair_v2(chave_json, titulo_sistema):
             if chave_json in data:
                 item = data[chave_json]
-                # v2 retorna 'referencia' e 'texto' claramente
                 ref_bruta = item.get('referencia', '')
                 texto = item.get('texto', '')
                 
-                # Se for Salmo, o refrão vem separado
                 if chave_json == 'salmo':
                     refrao = item.get('refrao', '')
                     if refrao:
@@ -150,9 +145,8 @@ def fetch_liturgia(date_obj):
                     'texto': texto
                 })
 
-        # Mapeamento dos campos da v2
         extrair_v2('primeiraLeitura', 'Primeira Leitura')
-        extrair_v2('segundaLeitura', 'Segunda Leitura') # Nem sempre tem
+        extrair_v2('segundaLeitura', 'Segunda Leitura')
         extrair_v2('salmo', 'Salmo Responsorial')
         extrair_v2('evangelho', 'Evangelho')
 
@@ -161,7 +155,7 @@ def fetch_liturgia(date_obj):
             return None
 
         final_data = {
-            'data': date_str_db, # Salva com ISO YYYY-MM-DD no banco para ordenação
+            'data': date_str_db,
             'nome_dia': nome_dia,
             'cor': cor_liturgica,
             'leituras': leituras_formatadas
@@ -170,6 +164,12 @@ def fetch_liturgia(date_obj):
         db.salvar_liturgia(date_str_db, final_data)
         return final_data
 
+    except requests.exceptions.HTTPError as err:
+        if err.response.status_code == 404:
+            st.error(f"Liturgia não encontrada para {date_obj.strftime('%d/%m/%Y')}. A API ainda não disponibilizou esta data.")
+        else:
+            st.error(f"Erro HTTP: {err}")
+        return None
     except Exception as e:
         st.error(f"Erro na requisição: {e}")
         return None
@@ -253,7 +253,6 @@ with c2:
     st.write("")
     if st.button("Buscar API Externa", type="primary"):
         st.session_state['data_busca'] = dt_input.strftime('%Y-%m-%d')
-        # Limpa cache da sessão se mudar a data
         if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
         st.rerun()
 
@@ -274,12 +273,8 @@ if data_busca:
                 with cols[i % 4]:
                     with st.container(border=True):
                         st.subheader(l['tipo'])
-                        
-                        # Exibe referência formatada
                         ref_display = l['ref'] if l['ref'] else "Sem referência"
                         st.markdown(f"**{ref_display}**")
-                        
                         st.markdown("---")
-                        
                         if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}", use_container_width=True):
                             handle_leitura_selection(data_busca, l['tipo'])
