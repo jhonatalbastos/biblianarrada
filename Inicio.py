@@ -1,17 +1,24 @@
+import sys
+import os
+
+# --- CORREÇÃO DE IMPORTAÇÃO (CRÍTICO PARA STREAMLIT CLOUD) ---
+# Adiciona o diretório atual ao sys.path antes de importar módulos locais
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 import requests
 import json
 import socket
 from datetime import datetime
-from modules import database as db  # Importa nosso novo módulo
+from modules import database as db  # Agora a importação funcionará
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
 
-# Inicializa o banco (cria pasta e arquivo se não existirem)
+# Inicializa o banco via módulo externo
 db.init_db()
 
-# --- FUNÇÕES AUXILIARES (LÓGICA DE NEGÓCIO) ---
+# --- FUNÇÕES AUXILIARES ---
 
 def get_leitura_status_logic(data_str, tipo_leitura):
     chave = f"{data_str}-{tipo_leitura}"
@@ -22,7 +29,7 @@ def get_leitura_status_logic(data_str, tipo_leitura):
         return default, em_prod
     return default, 0
 
-# --- TESTE DE CONEXÃO (MANTIDO) ---
+# --- TESTE DE CONEXÃO (API VERCEL / PARAMS) ---
 def test_api_connection():
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
     
@@ -43,11 +50,12 @@ def test_api_connection():
         success = False
         log.append(f"❌ ERRO DNS: {e}")
 
-    # 2. Teste HTTP
+    # 2. Teste HTTP com parâmetro de data
     if success:
         hoje = datetime.today().strftime('%Y-%m-%d')
         log.append(f"📡 Testando GET: `?date={hoje}`")
         try:
+            # Importante: params={'date': ...} conforme documentação da API
             resp = requests.get(BASE_URL, params={'date': hoje}, timeout=10)
             if resp.status_code == 200:
                 log.append("✅ HTTP 200: Conexão OK.")
@@ -80,11 +88,12 @@ def fetch_liturgia(date_obj):
     if BASE_URL.endswith('/'): BASE_URL = BASE_URL[:-1]
 
     try:
+        # Usa params para passar a data, conforme a API exige
         response = requests.get(BASE_URL, params={'date': date_str}, timeout=15)
         response.raise_for_status()
         data = response.json()
         
-        # Parser
+        # Parser Robusto
         leituras_formatadas = []
         cor = data.get('cor', 'Verde') 
         if not cor and 'liturgia' in data: cor = data['liturgia'].get('cor', 'Verde')
