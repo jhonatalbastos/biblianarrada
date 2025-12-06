@@ -3,20 +3,26 @@ import json
 import os
 from datetime import datetime
 
-# Define o caminho para a pasta 'data' e o arquivo do banco
+# Define o caminho absoluto para o banco de dados
+# Isso garante que funcione independente de onde o script é chamado
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DB_FILE = os.path.join(DATA_DIR, 'liturgia.db')
 
 def get_connection():
-    # Garante que a pasta data existe
+    """Cria conexão com o banco, garantindo que a pasta exista."""
     if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+        try:
+            os.makedirs(DATA_DIR)
+        except OSError:
+            pass # Pode já ter sido criado concorrentemente
     return sqlite3.connect(DB_FILE)
 
 def init_db():
+    """Inicializa as tabelas necessárias."""
     conn = get_connection()
     c = conn.cursor()
+    
     # Tabela Histórico (Cache da API)
     c.execute('''CREATE TABLE IF NOT EXISTS historico
                  (data_liturgia TEXT PRIMARY KEY, json_completo TEXT, cor TEXT, ultimo_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
@@ -55,7 +61,6 @@ def listar_historico():
     lista = []
     for data, cor, acesso in rows:
         try:
-            # Formata data se possível
             data_acesso = datetime.strptime(str(acesso).split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%d/%m/%Y %H:%M')
         except:
             data_acesso = acesso
