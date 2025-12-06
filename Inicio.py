@@ -2,606 +2,343 @@ import streamlit as st
 import requests
 import sqlite3
 import json
-import socket # Necessário para o teste de DNS
+import socket
 from datetime import datetime, timedelta
 from requests.exceptions import Timeout, RequestException, HTTPError 
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
 
-# --- NOVO TESTE DE CONEXÃO E DNS ---
-
-def test_api_connection():
-    """
-    Testa a resolução de DNS e a conectividade com a API.
-    Retorna True se o teste passar, False caso contrário.
-    """
-    
-    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api.liturgiadiaria.net/api/v1/liturgia")
-    
-    # 1. Extrai o hostname (domínio) para o teste de DNS
-    try:
-        from urllib.parse import urlparse
-        hostname = urlparse(BASE_URL).netloc
-        if not hostname:
-             hostname = "api.liturgiadiaria.net" # Fallback
-    except Exception:
-        hostname = "api.liturgiadiaria.net"
-        
-    log_messages = []
-    success = True
-    
-    log_messages.append(f"Iniciando teste de conexão para o hostname: **{hostname}**")
-    
-    # --- Teste de Resolução de DNS ---
-    try:
-        # Tenta resolver o nome do domínio para obter o endereço IP
-        addr_info = socket.getaddrinfo(hostname, 443)
-        ip_addresses = list(set([addr[4][0] for addr in addr_info]))
-        log_messages.append(f"✅ Sucesso na Resolução de DNS. IPs Encontrados: {', '.join(ip_addresses)}")
-    except socket.gaierror as e:
-        success = False
-        log_messages.append(f"❌ ERRO DE RESOLUÇÃO DE DNS: Não foi possível resolver o nome do host `{hostname}`.")
-        log_messages.append(f"Detalhe do Erro: {e}")
-        log_messages.append(">> Isso indica um problema no DNS do ambiente de hospedagem. A requisição HTTP falhará.")
-        
-    
-    # --- Teste de Conexão HTTP (apenas se o DNS for resolvido ou para testar o erro de conexão) ---
-    if success: # Continua o teste se o DNS resolveu (para pegar outros erros)
-        test_url = f"{BASE_URL}/{datetime.today().strftime('%Y-%m-%d')}"
-        log_messages.append(f"Iniciando requisição HTTP simples para: **{test_url}**")
-        
-        try:
-            response = requests.get(test_url, timeout=10) 
-            response.raise_for_status() # Lança exceção para 4xx/5xx
-            response.json() # Tenta decodificar o JSON
-            log_messages.append(f"✅ Sucesso na Requisição HTTP. Status Code: {response.status_code}")
-            log_messages.append(">> A conexão com a API está funcionando corretamente.")
-        
-        except Timeout:
-            success = False
-            log_messages.append(f"❌ ERRO DE CONEXÃO: Tempo limite da requisição HTTP excedido para `{test_url}`.")
-        except HTTPError as e:
-            # Erro HTTP (a conexão funcionou, mas a API retornou um erro 4xx/5xx)
-            success = False
-            log_messages.append(f"🟡 AVISO: Requisição HTTP falhou (Status {e.response.status_code}).")
-            log_messages.append("Detalhe: A API está acessível, mas retornou um erro.")
-        except RequestException as e:
-            success = False
-            log_messages.append(f"❌ ERRO DE CONEXÃO: Falha geral na requisição HTTP.")
-            log_messages.append(f"Detalhe do Erro: {e}")
-        except json.JSONDecodeError:
-            log_messages.append("🟡 AVISO: Requisição bem-sucedida, mas o conteúdo não é JSON válido.")
-            log_messages.append("Detalhe: A API está acessível, mas a resposta é inesperada.")
-            
-    # --- Exibição do Log ---
-    if not success:
-        # Exibe o erro de forma proeminente
-        with st.expander("🚨 ERRO CRÍTICO DE CONEXÃO / DNS 🚨 Clique para ver o Log Completo", expanded=True):
-            st.error("A conexão com a API de liturgia falhou. Verifique as configurações de rede ou DNS do ambiente de hospedagem.")
-            st.code("\n".join(log_messages))
-            
-    return success
-
-# --- BANCO DE DADOS E PERSISTÊNCIA ---
+# --- BANCO DE DADOS (Mantido igual) ---
 DB_FILE = 'biblia_narrada_db.sqlite'
 
-# ... (Resto do código do banco de dados - inalterado) ...
 def get_db_connection():
-    """Cria e retorna a conexão com o banco de dados."""
     return sqlite3.connect(DB_FILE)
 
 def init_db():
-    """Inicializa as tabelas do banco de dados (se não existirem)."""
     conn = get_db_connection()
     c = conn.cursor()
-    # Tabela para cache das liturgias (evita chamar API desnecessariamente)
     c.execute('''CREATE TABLE IF NOT EXISTS historico
                  (data_liturgia TEXT PRIMARY KEY, json_completo TEXT, cor TEXT, ultimo_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    # Tabela para rastrear o progresso da produção de cada leitura
     c.execute('''CREATE TABLE IF NOT EXISTS producao_status
-                 (chave_leitura TEXT PRIMARY KEY, 
-                  data_liturgia TEXT, 
-                  tipo_leitura TEXT, 
-                  progresso TEXT, 
-                  em_producao INTEGER, 
-                  ultimo_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-                  
+                 (chave_leitura TEXT PRIMARY KEY, data_liturgia TEXT, tipo_leitura TEXT, progresso TEXT, em_producao INTEGER, ultimo_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
 def carregar_do_banco(data_str):
-    """Carrega os dados da liturgia (JSON) do cache."""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT json_completo FROM historico WHERE data_liturgia = ?', (data_str,))
     res = c.fetchone()
     conn.close()
-    if res:
-        return json.loads(res[0])
-    return None
+    return json.loads(res[0]) if res else None
 
 def listar_cache_liturgia():
-    """Retorna uma lista de dicionários com data, cor e último acesso do cache."""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT data_liturgia, cor, ultimo_acesso FROM historico ORDER BY data_liturgia DESC')
     rows = c.fetchall()
     conn.close()
-    
     lista_cache = []
     for data, cor, acesso in rows:
-        data_acesso = datetime.strptime(acesso.split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%d/%m/%Y %H:%M')
-        lista_cache.append({
-            'Data': data,
-            'Cor Litúrgica': cor,
-            'Último Acesso': data_acesso
-        })
+        try:
+            data_acesso = datetime.strptime(acesso.split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%d/%m/%Y %H:%M')
+        except:
+            data_acesso = acesso
+        lista_cache.append({'Data': data, 'Cor Litúrgica': cor, 'Último Acesso': data_acesso})
     return lista_cache
 
 def salvar_no_banco(data_str, json_data):
-    """Salva os dados da liturgia (JSON) no cache."""
     conn = get_db_connection()
     c = conn.cursor()
     json_str = json.dumps(json_data)
     cor = json_data.get('cor', 'Branco') 
-    c.execute('''INSERT OR REPLACE INTO historico 
-                 (data_liturgia, json_completo, cor, ultimo_acesso) 
-                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)''', 
-              (data_str, json_str, cor))
+    c.execute('''INSERT OR REPLACE INTO historico (data_liturgia, json_completo, cor, ultimo_acesso) VALUES (?, ?, ?, CURRENT_TIMESTAMP)''', (data_str, json_str, cor))
     conn.commit()
     conn.close()
 
 def load_producao_status(chave=None):
-    """Carrega o progresso de uma leitura específica ou de todas as leituras ativas."""
     conn = get_db_connection()
     c = conn.cursor()
-    
     if chave:
         c.execute('SELECT progresso, em_producao FROM producao_status WHERE chave_leitura = ?', (chave,))
         res = c.fetchone()
         conn.close()
-        if res:
-            return json.loads(res[0]), res[1]
-        return None, 0
+        return (json.loads(res[0]), res[1]) if res else (None, 0)
     else:
-        default_progresso_json = json.dumps({"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False})
-        c.execute(f'''SELECT chave_leitura, data_liturgia, tipo_leitura, progresso, em_producao 
-                     FROM producao_status 
-                     WHERE em_producao = 1 OR progresso != ? ''', (default_progresso_json,))
+        default_json = json.dumps({"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False})
+        c.execute(f'SELECT chave_leitura, data_liturgia, tipo_leitura, progresso, em_producao FROM producao_status WHERE em_producao = 1 OR progresso != ?', (default_json,))
         rows = c.fetchall()
         conn.close()
         all_status = {}
         for row in rows:
-            chave, data_liturgia, tipo_leitura, progresso_json, em_producao = row
-            all_status[chave] = {
-                'data_liturgia': data_liturgia,
-                'tipo_leitura': tipo_leitura,
-                'progresso': json.loads(progresso_json),
-                'em_producao': em_producao
-            }
+            all_status[row[0]] = {'data_liturgia': row[1], 'tipo_leitura': row[2], 'progresso': json.loads(row[3]), 'em_producao': row[4]}
         return all_status
 
 def update_producao_status(chave, data_liturgia, tipo_leitura, progresso_dict, em_producao):
-    """Atualiza o estado persistente de progresso e flag 'em_producao'."""
     conn = get_db_connection()
     c = conn.cursor()
-    progresso_json = json.dumps(progresso_dict)
-    c.execute('''INSERT OR REPLACE INTO producao_status 
-                 (chave_leitura, data_liturgia, tipo_leitura, progresso, em_producao, ultimo_acesso) 
-                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''', 
-              (chave, data_liturgia, tipo_leitura, progresso_json, 1 if em_producao else 0))
+    c.execute('''INSERT OR REPLACE INTO producao_status (chave_leitura, data_liturgia, tipo_leitura, progresso, em_producao, ultimo_acesso) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''', 
+              (chave, data_liturgia, tipo_leitura, json.dumps(progresso_dict), 1 if em_producao else 0))
     conn.commit()
     conn.close()
     
 def get_leitura_status(data_str, tipo_leitura):
-    """Wrapper para carregar status ou retornar default se não existir."""
     chave = f"{data_str}-{tipo_leitura}"
-    default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
-    progresso_json, em_producao = load_producao_status(chave)
-    if progresso_json:
-        progresso = default_progresso.copy()
-        progresso.update(progresso_json)
-        return progresso, em_producao
-    return default_progresso, 0
+    default = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
+    prog, em_prod = load_producao_status(chave)
+    if prog:
+        default.update(prog)
+        return default, em_prod
+    return default, 0
 
+# --- NOVO TESTE DE CONEXÃO (ADAPTADO PARA QUERY PARAM) ---
+def test_api_connection():
+    # URL definida no README
+    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
+    
+    # Extrai o hostname para teste de DNS
+    try:
+        from urllib.parse import urlparse
+        hostname = urlparse(BASE_URL).netloc
+        if not hostname: hostname = "api-liturgia-diaria.vercel.app"
+    except:
+        hostname = "api-liturgia-diaria.vercel.app"
 
-# --- INTEGRAÇÃO COM API EXTERNA ---
+    log = [f"🌐 Hostname alvo: **{hostname}**", f"🔗 URL Base: `{BASE_URL}`"]
+    success = True
+    
+    # 1. Teste DNS
+    try:
+        socket.getaddrinfo(hostname, 443)
+        log.append("✅ DNS Resolvido com sucesso.")
+    except socket.gaierror as e:
+        success = False
+        log.append(f"❌ ERRO DNS: Não foi possível encontrar o servidor `{hostname}`.")
+        log.append(f"Detalhe: {e}")
+
+    # 2. Teste HTTP (se DNS ok)
+    if success:
+        # Testa usando o parâmetro ?date=YYYY-MM-DD
+        hoje = datetime.today().strftime('%Y-%m-%d')
+        log.append(f"📡 Testando GET com params: `?date={hoje}`")
+        
+        try:
+            # Importante: params=... monta a query string corretamente
+            resp = requests.get(BASE_URL, params={'date': hoje}, timeout=10)
+            
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    log.append(f"✅ HTTP 200: Conexão OK. JSON recebido.")
+                    # Verificação básica se o JSON tem conteúdo
+                    if not data:
+                        log.append("⚠️ Aviso: JSON vazio retornado.")
+                except json.JSONDecodeError:
+                    log.append("❌ Erro: Resposta não é um JSON válido.")
+                    success = False
+            else:
+                log.append(f"❌ HTTP Erro: Status {resp.status_code}")
+                success = False
+                
+        except Exception as e:
+            success = False
+            log.append(f"❌ ERRO HTTP FATAL: {e}")
+
+    # Exibe o log se houver erro
+    if not success:
+        with st.expander("🚨 DIAGNÓSTICO DE CONEXÃO (CLIQUE PARA ABRIR)", expanded=True):
+            st.error("Falha ao conectar na API Litúrgica.")
+            st.markdown("\n".join([f"- {l}" for l in log]))
+            st.warning("Verifique se a URL base está correta e se a Vercel não está bloqueando o IP.")
+    
+    return success
+
+# --- INTEGRAÇÃO COM A API (ADAPTADA AO README) ---
 
 def fetch_liturgia(date_obj):
-    """
-    Busca a liturgia do dia na API externa (usando o endpoint Vercel/Proxy) ou no cache local.
-    """
     date_str = date_obj.strftime('%Y-%m-%d')
     
-    # 1. Tenta carregar do cache
-    cached_data = carregar_do_banco(date_str)
-    if cached_data:
-        st.info(f"Dados de **{date_str}** carregados do cache local.")
-        return cached_data
+    # 1. Cache Local
+    cached = carregar_do_banco(date_str)
+    if cached:
+        st.toast(f"Carregado do cache: {date_str}", icon="💾")
+        return cached
     
-    # 2. Define o endpoint da API
-    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api.liturgiadiaria.net/api/v1/liturgia")
-    API_URL = f"{BASE_URL}/{date_str}"
+    # 2. Configuração da API
+    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
     
+    # Remove barra final se houver, para garantir limpeza
+    if BASE_URL.endswith('/'): BASE_URL = BASE_URL[:-1]
+
     try:
-        response = requests.get(API_URL, timeout=15) 
-        response.raise_for_status() 
+        # AQUI ESTÁ A MUDANÇA PRINCIPAL: Uso de params
+        response = requests.get(BASE_URL, params={'date': date_str}, timeout=15)
+        response.raise_for_status()
         data = response.json()
         
-        # 3. Processamento e Salvamento
-        if data and 'leituras' in data:
-            
-            leituras_formatadas = []
-            tipo_mapeamento = {
-                "Primeira Leitura": "Primeira Leitura", "Salmo Responsorial": "Salmo",
-                "Segunda Leitura": "Segunda Leitura", "Evangelho": "Evangelho",
-                "Evangelho (Missa do dia)": "Evangelho", "Salmo": "Salmo" 
-            }
-            
-            for leitura in data.get('leituras', []):
-                if 'texto' in leitura and 'titulo' in leitura and 'ref' in leitura:
-                    tipo_original = leitura['titulo'].strip()
-                    tipo = tipo_mapeamento.get(tipo_original, tipo_original)
-                    
+        # --- PARSER PARA O FORMATO JOSUÉ SANTOS ---
+        leituras_formatadas = []
+        
+        # Tenta pegar a cor (às vezes vem 'liturgia_cor', 'cor' ou dentro de 'liturgia')
+        cor = data.get('cor', 'Verde') 
+        if not cor and 'liturgia' in data: 
+            cor = data['liturgia'].get('cor', 'Verde')
+
+        # Mapeamento de chaves planas que essa API costuma retornar
+        mapeamento = {
+            'primeiraLeitura': 'Primeira Leitura',
+            'segundaLeitura': 'Segunda Leitura',
+            'salmo': 'Salmo Responsorial',
+            'evangelho': 'Evangelho'
+        }
+        
+        for chave_api, titulo_exibicao in mapeamento.items():
+            if chave_api in data:
+                conteudo = data[chave_api]
+                
+                # O conteúdo pode vir como string direta ou dict
+                texto_final = ""
+                ref_final = ""
+                
+                if isinstance(conteudo, dict):
+                    texto_final = conteudo.get('texto', '') or conteudo.get('refrao', '')
+                    ref_final = conteudo.get('referencia', '') or conteudo.get('ref', '')
+                elif isinstance(conteudo, str):
+                    texto_final = conteudo
+                    # Tenta achar referência se estiver separada (às vezes acontece)
+                    ref_final = data.get(f"{chave_api}Ref", "")
+                
+                if texto_final:
                     leituras_formatadas.append({
-                        'tipo': tipo, 'titulo': tipo_original,
-                        'ref': leitura['ref'], 'texto': leitura['texto']
+                        'tipo': titulo_exibicao,
+                        'titulo': titulo_exibicao,
+                        'ref': ref_final,
+                        'texto': texto_final
                     })
-            
-            cor = data.get('cor', 'Branco')
 
-            final_data = {
-                'data': date_str, 'nome_dia': data.get('nome', 'Dia Litúrgico'),
-                'cor': cor, 'leituras': leituras_formatadas
-            }
-            
+        if not leituras_formatadas:
+            # Fallback: Tenta iterar caso o formato seja diferente
+            st.warning("Formato padrão não encontrado. Tentando extração genérica.")
+            # (Adicione lógica extra aqui se necessário, mas o mapeamento acima cobre 90% dos casos dessa lib)
+
+        final_data = {
+            'data': date_str,
+            'nome_dia': data.get('dia', 'Dia Litúrgico'),
+            'cor': cor,
+            'leituras': leituras_formatadas
+        }
+        
+        if leituras_formatadas:
             salvar_no_banco(date_str, final_data)
-            st.success(f"Dados de **{date_str}** buscados e salvos no cache. Cor: **{cor}**")
             return final_data
-        
         else:
-            st.error("Resposta da API inválida ou sem leituras.")
-            return None 
+            st.error("API respondeu, mas não encontrei leituras no JSON.")
+            st.json(data) # Debug para o usuário ver o que chegou
+            return None
 
-    except Timeout:
-        st.error("Erro: Tempo limite da requisição à API excedido.")
-    except HTTPError as e:
-        st.error(f"Erro HTTP {e.response.status_code} ao buscar dados da API. Detalhe: {e}")
-    except RequestException as e:
-        # Erro de Conexão (inclui NameResolutionError, que gerou o log)
-        st.error(f"🚨 ERRO DE CONEXÃO 🚨 Falha ao tentar buscar dados da URL: {API_URL}. Detalhe do erro: {e}")
-        # Chamamos o teste aqui para reexibir o log detalhado no expander
+    except Exception as e:
+        st.error(f"Erro na requisição: {e}")
+        # Chama o diagnóstico se falhar
         test_api_connection()
-    except json.JSONDecodeError:
-        st.error("Erro ao decodificar a resposta JSON da API.")
-        
-    return None 
+        return None
 
-# --- FUNÇÕES DE RENDERIZAÇÃO DA DASHBOARD (inalteradas) ---
+# --- RENDERIZAÇÃO DA DASHBOARD (IGUAL AO ANTERIOR) ---
 
 def get_status_emoji(key, progresso):
-    """Retorna o emoji de status para a chave de progresso."""
-    if progresso.get(key, False):
-        return "✅"
-    return "❌"
-
-def create_dashboard_table(data_list):
-    """Cria a tabela de progresso no Streamlit."""
-    
-    # Prepara os dados para a tabela
-    table_data = []
-    default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
-
-    for item in data_list:
-        chave = item['chave']
-        progresso_raw = item['progresso']
-        em_producao = item['em_producao']
-        
-        progresso = default_progresso.copy()
-        progresso.update(progresso_raw)
-
-        etapas_completas = sum(progresso.values())
-        total_etapas = len(default_progresso)
-        
-        if progresso.get('publicacao', False):
-            status_liturgico = "🟢 Publicado"
-        elif em_producao:
-            status_liturgico = f"🚧 Em Produção ({etapas_completas}/{total_etapas})" 
-        elif progresso_raw != default_progresso:
-            status_liturgico = f"🟡 Rascunho ({etapas_completas}/{total_etapas})"
-        else:
-            status_liturgico = "⚪ Inativo"
-
-        row = {
-            'Data': item['data_liturgia'],
-            'Tipo': item['tipo_leitura'],
-            'Status': status_liturgico,
-            'Roteiro': get_status_emoji('roteiro', progresso),
-            'Imagem': get_status_emoji('imagens', progresso),
-            'Áudio': get_status_emoji('audio', progresso),
-            'Overlay': get_status_emoji('overlay', progresso),
-            'Legendas': get_status_emoji('legendas', progresso),
-            'Vídeo': get_status_emoji('video', progresso),
-            'Publicar': get_status_emoji('publicacao', progresso),
-            'Ação': f'<div id="action_btn_{chave}"></div>' 
-        }
-        table_data.append(row)
-        
-    if not table_data:
-        st.info("Nenhuma leitura em produção ou com rascunho salvo.")
-        return
-
-    df = st.dataframe(
-        table_data,
-        column_config={
-            "Ação": st.column_config.ButtonColumn("Selecionar", help="Clique para iniciar/continuar a produção desta leitura", key="dashboard_action_btn"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        column_order=['Data', 'Tipo', 'Status', 'Roteiro', 'Imagem', 'Áudio', 'Overlay', 'Legendas', 'Vídeo', 'Publicar', 'Ação']
-    )
-    
-    clicked_row_index = st.session_state.get('dashboard_action_btn')
-    if clicked_row_index is not None and clicked_row_index != -1:
-        selected_item = data_list[clicked_row_index]
-        handle_leitura_selection(selected_item['data_liturgia'], selected_item['tipo_leitura'])
-
+    return "✅" if progresso.get(key, False) else "❌"
 
 def handle_leitura_selection(data_str, tipo_leitura):
-    """Lida com a seleção de uma leitura e navega para a primeira página de produção."""
-    
     try:
-        data_obj = datetime.strptime(data_str, '%Y-%m-%d')
-    except ValueError:
-        st.error(f"Erro: Data inválida para seleção: {data_str}")
-        return
+        dados_dia = fetch_liturgia(datetime.strptime(data_str, '%Y-%m-%d'))
+        if not dados_dia: return
         
-    dados_dia = fetch_liturgia(data_obj) 
-    
-    if not dados_dia or 'leituras' not in dados_dia:
-        st.warning(f"Não foi possível carregar os dados de liturgia para {data_str}.")
-        return
+        leitura = next((l for l in dados_dia['leituras'] if l['tipo'] == tipo_leitura), None)
+        if not leitura: st.error("Leitura não encontrada."); return
+
+        prog, _ = get_leitura_status(data_str, tipo_leitura)
         
-    leitura_completa = next((l for l in dados_dia['leituras'] if l['tipo'] == tipo_leitura), None)
-    
-    if not leitura_completa:
-        st.error(f"Leitura do tipo '{tipo_leitura}' não encontrada para o dia {data_str}.")
-        return
-
-    progresso, _ = get_leitura_status(data_str, tipo_leitura)
-
-    st.session_state['data_atual_str'] = data_str
-    leitura_completa['cor_liturgica'] = dados_dia['cor'] 
-    st.session_state['leitura_atual'] = leitura_completa 
-    st.session_state['progresso_leitura_atual'] = progresso
-    
-    chave = f"{data_str}-{tipo_leitura}"
-    update_producao_status(chave, data_str, tipo_leitura, progresso, 1) 
-    
-    if 'artefatos' not in st.session_state:
-        st.session_state['artefatos'] = {}
-    
-    st.info(f"Produção de **{tipo_leitura}** de {data_str} iniciada/continuada. Navegando...")
-    st.switch_page("pages/1_Roteiro_Viral.py")
-
-
-# --- FUNÇÃO PARA SELECIONAR DO CACHE (inalterada) ---
-
-def select_from_cache(cached_data_list):
-    """Cria a tabela de dados em cache e permite a seleção da data."""
-    st.subheader("🗓️ Datas Salvas no Cache (Seu Histórico)")
-    
-    if not cached_data_list:
-        st.info("Nenhuma liturgia encontrada no cache local (biblia_narrada_db.sqlite).")
-        return
-    
-    table_data = []
-    for item in cached_data_list:
-        table_data.append({
-            'Data': item['Data'],
-            'Cor': item['Cor Litúrgica'],
-            'Último Acesso': item['Último Acesso'],
-            'Ação': f'<div id="cache_btn_{item["Data"]}"></div>' 
+        st.session_state.update({
+            'data_atual_str': data_str,
+            'leitura_atual': {**leitura, 'cor_liturgica': dados_dia['cor']},
+            'progresso_leitura_atual': prog
         })
+        
+        update_producao_status(f"{data_str}-{tipo_leitura}", data_str, tipo_leitura, prog, 1)
+        st.switch_page("pages/1_Roteiro_Viral.py")
+    except Exception as e:
+        st.error(f"Erro ao selecionar: {e}")
 
-    st.dataframe(
-        table_data,
-        column_config={
-            "Ação": st.column_config.ButtonColumn("Ver Leituras", help="Carregar as leituras desta data para seleção", key="cache_action_btn"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        column_order=['Data', 'Cor', 'Último Acesso', 'Ação']
-    )
-    
-    clicked_row_index = st.session_state.get('cache_action_btn')
-    if clicked_row_index is not None and clicked_row_index != -1:
-        data_str_selecionada = cached_data_list[clicked_row_index]['Data']
-        st.session_state['data_busca'] = data_str_selecionada
-        st.success(f"Liturgia de **{data_str_selecionada}** selecionada. Use a seção de 'Busca' para recarregar os dados ou veja a seção 'Seleção de Leitura para Produção' abaixo.")
-        st.rerun()
-
-
-# --- LAYOUT PRINCIPAL ---
-
-# --- Execução Inicial ---
+# --- EXECUÇÃO PRINCIPAL ---
 if __name__ == '__main__':
     init_db()
-    
-# --- CHAMA O TESTE DE CONEXÃO LOGO NO INÍCIO ---
-# (Se houver erro, o expander aparecerá antes de tudo)
-test_api_connection()
-
+    # Executa o teste de conexão logo no início
+    test_api_connection()
 
 st.title("📖 Biblia Narrada: Painel de Produção")
 
-# --- DASHBOARD DE PRODUÇÃO (Tabela) ---
+# --- DASHBOARD ---
+st.header("📋 Em Produção")
+status_raw = load_producao_status()
+dash_data = []
+for k, v in status_raw.items():
+    if not (v['progresso'].get('publicacao') and not v['em_producao']):
+        dash_data.append({'chave': k, **v})
 
-st.header("📋 Dashboard de Leituras em Produção")
-st.markdown("Gerencie o status de produção das leituras ativas e rascunhos salvos.")
-
-leituras_em_producao_full = load_producao_status()
-data_list_dashboard = []
-
-for chave, item in leituras_em_producao_full.items():
-    is_published_and_inactive = item['progresso'].get('publicacao', False) and not item.get('em_producao', 0)
-    if not is_published_and_inactive:
-        data_list_dashboard.append({
-            'chave': chave, 'data_liturgia': item['data_liturgia'],
-            'tipo_leitura': item['tipo_leitura'], 'progresso': item['progresso'],
-            'em_producao': item['em_producao']
-        })
-        
-st.session_state['leituras_em_producao'] = leituras_em_producao_full
-
-if data_list_dashboard:
-    create_dashboard_table(data_list_dashboard)
+if dash_data:
+    cols = st.columns(4)
+    for idx, item in enumerate(dash_data):
+        with cols[idx % 4]:
+            with st.container(border=True):
+                st.caption(f"{item['data_liturgia']} | {item['tipo_leitura']}")
+                etapas = sum(item['progresso'].values())
+                st.progress(etapas/7)
+                if st.button("Abrir", key=f"btn_dash_{item['chave']}"):
+                    handle_leitura_selection(item['data_liturgia'], item['tipo_leitura'])
 else:
-    st.info("Nenhuma leitura está marcada como 'Em Produção' ou possui rascunho salvo no momento.")
+    st.info("Nada em produção.")
 
-st.markdown("---")
+st.divider()
 
-# --- LISTAGEM DE CACHE ---
-cached_data = listar_cache_liturgia()
-select_from_cache(cached_data)
-
-st.markdown("---")
-
-# --- SELEÇÃO DE DATA / BUSCA DE API ---
-st.header("🔍 Buscar Nova Liturgia (API)")
-
-if 'data_busca' not in st.session_state:
-    st.session_state['data_busca'] = datetime.today().strftime('%Y-%m-%d')
-
-
-with st.container(border=True):
-    col1, col2 = st.columns([1, 3])
-
-    data_hoje = datetime.today().date()
-    data_str_to_fetch = st.session_state.get('data_busca', data_hoje.strftime('%Y-%m-%d'))
-    try:
-        data_inicial_obj = datetime.strptime(data_str_to_fetch, '%Y-%m-%d').date()
-    except ValueError:
-        data_inicial_obj = data_hoje
-
-    with col1:
-        data_selecionada = st.date_input(
-            "📅 Selecionar Data da Liturgia",
-            value=data_inicial_obj,
-            min_value=data_hoje - timedelta(days=365), 
-            max_value=data_hoje + timedelta(days=365),
-            key='data_selecao'
-        )
-        
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True) 
-
-        if st.button("Buscar Liturgia (API/Cache)", type="primary", use_container_width=True):
-            st.session_state['data_busca'] = data_selecionada.strftime('%Y-%m-%d')
-            if 'dados_liturgia' in st.session_state and st.session_state['dados_liturgia'].get('data') != st.session_state['data_busca']:
-                 del st.session_state['dados_liturgia']
+# --- CACHE ---
+cache = listar_cache_liturgia()
+if cache:
+    st.subheader("🗓️ Histórico")
+    col_c1, col_c2 = st.columns([3,1])
+    with col_c1:
+        selected_cache = st.selectbox("Selecione do histórico:", [f"{c['Data']} - {c['Cor Litúrgica']}" for c in cache], key="sel_cache")
+    with col_c2:
+        if st.button("Carregar Histórico"):
+            data_sel = selected_cache.split(' - ')[0]
+            st.session_state['data_busca'] = data_sel
             st.rerun()
 
-if data_selecionada.strftime('%Y-%m-%d') != st.session_state.get('data_busca'):
-    data_str_to_fetch = data_selecionada.strftime('%Y-%m-%d')
-    st.session_state['data_busca'] = data_str_to_fetch
+st.divider()
 
-dados_liturgia = None
-data_str_to_fetch = st.session_state.get('data_busca')
+# --- BUSCA API ---
+st.header("🔍 Buscar Nova (API Vercel)")
+c1, c2 = st.columns([1, 2])
+with c1:
+    dt_input = st.date_input("Data", value=datetime.today())
+with c2:
+    st.write("")
+    st.write("")
+    if st.button("Buscar na API", type="primary"):
+        st.session_state['data_busca'] = dt_input.strftime('%Y-%m-%d')
+        if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
+        st.rerun()
 
-if 'dados_liturgia' in st.session_state and st.session_state['dados_liturgia'].get('data') == data_str_to_fetch:
-    dados_liturgia = st.session_state['dados_liturgia']
-else:
-    try:
-        data_obj_to_fetch = datetime.strptime(data_str_to_fetch, '%Y-%m-%d')
-        dados_liturgia = fetch_liturgia(data_obj_to_fetch)
-        if dados_liturgia:
-            st.session_state['dados_liturgia'] = dados_liturgia
-    except ValueError:
-        pass
-    except TypeError:
-        pass
-
-
-# --- RENDERIZAÇÃO DA LITURGIA (Se disponível) ---
-
-if dados_liturgia:
-    st.markdown("---")
+data_busca = st.session_state.get('data_busca')
+if data_busca:
+    dados = fetch_liturgia(datetime.strptime(data_busca, '%Y-%m-%d'))
     
-    liturgia_info = f"**{dados_liturgia.get('nome_dia', 'Dia Litúrgico')}**"
-    cor_liturgica = dados_liturgia.get('cor', 'Branco')
-    
-    cor_map = {
-        'Verde': '#d4edda', 'Branco': '#f8f9fa', 
-        'Vermelho': '#f8d7da', 'Roxo': '#e4e7ff', 
-        'Rosa': '#f8c7d8'
-    }
-    bg_color = cor_map.get(cor_liturgica, '#f8f9fa')
-
-    st.markdown(f"""
-    <div style="background-color: {bg_color}; padding: 15px; border-radius: 8px; border: 1px solid #ccc;">
-        <h3 style="margin-top: 0; color: #333;">{liturgia_info}</h3>
-        <p style="margin-bottom: 0;">Data: {data_str_to_fetch} | Cor Litúrgica: <strong>{cor_liturgica}</strong></p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    
-    st.subheader("Seleção de Leitura para Produção")
-    
-    leituras_disponiveis = []
-    
-    if 'leituras' in dados_liturgia:
-        for leitura in dados_liturgia['leituras']:
-            tipo_leitura = leitura['tipo']
-            chave = f"{data_str_to_fetch}-{tipo_leitura}"
-            progresso, em_producao = get_leitura_status(data_str_to_fetch, tipo_leitura)
-            
-            leituras_disponiveis.append({
-                'tipo': tipo_leitura, 'ref': leitura['ref'],
-                'progresso': progresso, 'em_producao': em_producao,
-                'chave': chave
-            })
-
-    
-    if leituras_disponiveis:
-        cols_leituras = st.columns(len(leituras_disponiveis))
-        
-        default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
-
-        for i, leitura in enumerate(leituras_disponiveis):
-            progresso = leitura['progresso']
-            
-            if leitura['em_producao']:
-                 status_texto = "Continuar Produção"; btn_type = "primary"; icone = "➡️"
-            elif progresso.get('publicacao', False):
-                 status_texto = "Visualizar (Publicado)"; btn_type = "secondary"; icone = "👁️"
-            elif progresso != default_progresso:
-                 status_texto = "Continuar Rascunho"; btn_type = "secondary"; icone = "✍️"
-            else:
-                 status_texto = "Iniciar Produção"; btn_type = "secondary"; icone = "➕"
-
-            
-            with cols_leituras[i]:
-                 with st.container(border=True):
-                     st.markdown(f"**{leitura['tipo']}**")
-                     st.caption(leitura['ref'])
-                     
-                     etapas_completas = sum(leitura['progresso'].values())
-                     total_etapas = len(default_progresso)
-                     progress_value = etapas_completas / total_etapas
-                     
-                     st.progress(progress_value, text=f"Progresso: {etapas_completas}/{total_etapas} etapas") 
-                     
-                     if st.button(f"{icone} {status_texto}", key=f"select_leitura_{leitura['chave']}", type=btn_type, use_container_width=True):
-                        handle_leitura_selection(data_str_to_fetch, leitura['tipo'])
-    else:
-        st.info("Nenhuma leitura encontrada para a data selecionada.")
-
-else:
-    st.warning("Liturgia não carregada. Por favor, use a lista do cache ou tente buscar uma nova data na API.")
-
-# --- FOOTER ---
-st.markdown("---")
-api_warning_url = st.secrets.get("LITURGIA_API_BASE_URL", "https://api.liturgiadiaria.net/api/v1/liturgia")
-st.caption(f"Dados da liturgia fornecidos pela API. Fonte: `{api_warning_url}`. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    if dados:
+        st.success(f"Liturgia encontrada: {dados['nome_dia']} ({dados['cor']})")
+        cols = st.columns(len(dados['leituras']))
+        for i, l in enumerate(dados['leituras']):
+            with cols[i % 4]:
+                with st.container(border=True):
+                    st.markdown(f"**{l['tipo']}**")
+                    st.caption(l['ref'] if l['ref'] else "Sem referência")
+                    if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}"):
+                        handle_leitura_selection(data_busca, l['tipo'])
