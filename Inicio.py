@@ -35,29 +35,39 @@ else:
 
 def limpar_referencia(texto, tipo):
     """
-    Limpa e formata a referência bíblica conforme solicitado.
+    Limpa e formata a referência bíblica com precisão.
     """
     if not texto: return ""
     
-    # Se for Salmo, mantém original
+    # Salmo mantém original
     if tipo == "Salmo Responsorial":
         return texto
 
-    # Remove prefixos litúrgicos comuns
+    # 1. Limpeza de prefixos litúrgicos
+    # Remove "Primeira/Segunda leitura:"
     texto = re.sub(r'^(Primeira|Segunda)\s+leitura\s*[:|-]?\s*', '', texto, flags=re.IGNORECASE)
+    # Remove "Leitura do..."
     texto = re.sub(r'^Leitura\s+d[oa]\s+', '', texto, flags=re.IGNORECASE)
 
-    # --- LÓGICA ESPECÍFICA PARA EVANGELHO ---
+    # --- LÓGICA DO EVANGELHO ---
     if tipo == "Evangelho":
-        # 1. Remove "Proclamação do Evangelho... segundo"
+        # Remove "Proclamação do Evangelho... segundo..."
         texto = re.sub(r'^(Proclamação do\s+)?Evangelho(\s+de Jesus Cristo)?\s+segundo\s+', '', texto, flags=re.IGNORECASE)
         
-        # 2. Remove "São", "Santo", "Santa" (NOVO AJUSTE)
-        texto = re.sub(r'\b(São|Santo|Santa)\s+', '', texto, flags=re.IGNORECASE)
+        # Remove "São", "Santo", "Santa" (isolados)
+        texto = re.sub(r'\b(São|Santo|Santa)\b\s*', '', texto, flags=re.IGNORECASE)
 
-        # 3. Formata "Mateus 3" para "Mateus, Cap. 3"
-        # Procura uma letra seguida de espaço e número
-        texto = re.sub(r'([A-Za-z])\s+(\d+)', r'\1, Cap. \2', texto)
+        # Remove dois pontos soltos que possam ter sobrado antes do número (Ex: "Lucas: 3" -> "Lucas 3")
+        texto = re.sub(r':\s*(?=\d)', ' ', texto)
+        
+        # Remove dois pontos no final da string se não houver número depois (Ex: "Lucas:")
+        texto = re.sub(r':\s*$', '', texto)
+
+        # --- FORMATAÇÃO "Cap." ---
+        # Procura por: (Letra) + (Espaço ou Pontuação opcional) + (Número)
+        # Substitui por: Letra + ", Cap. " + Número
+        # count=1 garante que só faça isso no primeiro número (o capítulo)
+        texto = re.sub(r'([A-Za-z])\s*:?\s+(\d+)', r'\1, Cap. \2', texto, count=1)
 
     return texto.strip()
 
@@ -77,7 +87,6 @@ def test_api_connection():
         hostname = urlparse(BASE_URL).netloc or "api-liturgia-diaria.vercel.app"
     except:
         hostname = "api-liturgia-diaria.vercel.app"
-    
     try:
         socket.getaddrinfo(hostname, 443)
         return True
@@ -108,23 +117,38 @@ def fetch_liturgia(date_obj):
         cor_liturgica = "Verde"
         nome_dia = "Dia Litúrgico"
 
-        # --- PARSER DO JSON ---
         if 'today' in data:
             today = data['today']
             cor_liturgica = today.get('color', 'Verde')
             nome_dia = today.get('entry_title', 'Dia Litúrgico').replace('<br/>', ' - ')
             readings = today.get('readings', {})
             
-            def processar_item(tipo_sistema, item_api, ref_key='title'):
+            # --- PROCESSADOR INTELIGENTE DE CAMPOS ---
+            def processar_item(tipo_sistema, item_api, chaves_possiveis_ref):
                 if not item_api: return
                 
-                # Pega a referência bruta ou título
-                ref_bruta = item_api.get(ref_key, '') or item_api.get('head_title', '')
+                # Tenta encontrar a referência em ordem de prioridade
+                ref_bruta = ""
+                for chave in chaves_possiveis_ref:
+                    val = item_api.get(chave)
+                    # Verifica se o valor existe e se parece ter números (para evitar títulos vazios como "São Lucas:")
+                    if val and isinstance(val, str):
+                        ref_bruta = val
+                        # Se for Evangelho, damos preferência para strings que tenham dígitos
+                        if tipo_sistema == 'Evangelho' and any(char.isdigit() for char in val):
+                            break
+                        # Para outros, a primeira encontrada serve
+                        if tipo_sistema != 'Evangelho':
+                            break
                 
-                # Limpa a referência
+                # Se não achou nada, tenta 'title' como fallback
+                if not ref_bruta:
+                    ref_bruta = item_api.get('title', '')
+
+                # Limpeza e Formatação
                 ref_limpa = limpar_referencia(ref_bruta, tipo_sistema)
                 
-                # Tratamento do texto (Salmo vs outros)
+                # Extração do Texto
                 texto_final = item_api.get('text', '')
                 if tipo_sistema == 'Salmo Responsorial':
                     refrao = item_api.get('response', '')
@@ -142,10 +166,12 @@ def fetch_liturgia(date_obj):
                     'texto': texto_final
                 })
 
-            processar_item('Primeira Leitura', readings.get('first_reading'))
-            processar_item('Segunda Leitura', readings.get('second_reading'))
-            processar_item('Salmo Responsorial', readings.get('psalm'))
-            processar_item('Evangelho', readings.get('gospel'))
+            # Mapeamento de prioridade: Para Evangelho, 'head_title' costuma ter os números
+            processar_item('Primeira Leitura', readings.get('first_reading'), ['title', 'head_title'])
+            processar_item('Segunda Leitura', readings.get('second_reading'), ['title', 'head_title'])
+            processar_item('Salmo Responsorial', readings.get('psalm'), ['title'])
+            # AQUI ESTAVA O PROBLEMA: Priorizamos head_title para o Evangelho
+            processar_item('Evangelho', readings.get('gospel'), ['head_title', 'title'])
 
         else:
             # Fallback (Formato antigo)
@@ -164,7 +190,6 @@ def fetch_liturgia(date_obj):
                     conteudo = data[chave]
                     ref_bruta = ""
                     texto = ""
-                    
                     if isinstance(conteudo, dict):
                         texto = conteudo.get('texto', '') or conteudo.get('refrao', '')
                         ref_bruta = conteudo.get('referencia', '') or conteudo.get('ref', '')
@@ -298,9 +323,8 @@ if data_busca:
                 with cols[i % 4]:
                     with st.container(border=True):
                         st.subheader(l['tipo'])
-                        ref_display = l['ref'] if l['ref'] else ""
-                        if ref_display:
-                            st.markdown(f"**{ref_display}**")
+                        ref_display = l['ref'] if l['ref'] else "Referência não detectada"
+                        st.markdown(f"**{ref_display}**")
                         
                         st.markdown("---")
                         
