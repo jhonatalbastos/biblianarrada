@@ -3,7 +3,8 @@ import requests
 import sqlite3
 import json
 from datetime import datetime, timedelta
-import calendar # Corrigido: Usamos apenas 'datetime' e 'timedelta' da biblioteca 'datetime'
+# Importações de exceções focadas apenas em Requests, sem manipulação de socket/DNS
+from requests.exceptions import Timeout, RequestException, HTTPError 
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
@@ -118,7 +119,7 @@ def get_leitura_status(data_str, tipo_leitura):
     return default_progresso, 0
 
 
-# --- INTEGRAÇÃO COM API EXTERNA (Simulada) ---
+# --- INTEGRAÇÃO COM API EXTERNA ---
 
 def fetch_liturgia(date_obj):
     """
@@ -132,7 +133,7 @@ def fetch_liturgia(date_obj):
         st.info(f"Dados de **{date_str}** carregados do cache local.")
         return cached_data
     
-    # 2. Se não estiver no cache, busca na API (Simulação: API da ACI Digital)
+    # 2. Se não estiver no cache, busca na API
     API_URL = f"https://liturgiadiaria.pt/api/v1/liturgia/{date_str}"
     
     st.info(f"Buscando dados da liturgia para {date_str} na API externa...")
@@ -180,16 +181,19 @@ def fetch_liturgia(date_obj):
         
         else:
             st.error("Resposta da API inválida ou sem leituras.")
-            return None
-            
-    except requests.exceptions.Timeout:
+            return None # Retorna None em caso de falha no conteúdo
+
+    except Timeout:
         st.error("Erro: Tempo limite da requisição à API excedido.")
-    except requests.exceptions.RequestException as e:
-        st.error(f"Erro ao buscar dados da API: {e}")
+    except HTTPError as e:
+        st.error(f"Erro HTTP ao buscar dados da API: {e}")
+    except RequestException as e:
+        # Captura NameResolutionError, ConnectionError, etc., e reporta ao usuário.
+        st.error(f"Erro ao buscar dados da API. Verifique a conexão de rede/DNS: {e}")
     except json.JSONDecodeError:
         st.error("Erro ao decodificar a resposta JSON da API.")
         
-    return None
+    return None # Retorna None em todos os cenários de falha para evitar dados simulados.
 
 # --- FUNÇÕES DE RENDERIZAÇÃO DA DASHBOARD ---
 
@@ -269,7 +273,8 @@ def handle_leitura_selection(data_str, tipo_leitura):
     """Lida com a seleção de uma leitura e navega para a primeira página de produção."""
     
     # 1. Carrega os dados completos do dia
-    dados_dia = carregar_do_banco(data_str)
+    data_obj = datetime.strptime(data_str, '%Y-%m-%d')
+    dados_dia = fetch_liturgia(data_obj) 
     
     if not dados_dia or 'leituras' not in dados_dia:
         st.error("Erro ao carregar dados da liturgia. Tente recarregar ou buscar novamente.")
@@ -336,9 +341,13 @@ dados_liturgia = None
 if 'dados_liturgia' in st.session_state and st.session_state['dados_liturgia'].get('data') == data_str_to_fetch:
     dados_liturgia = st.session_state['dados_liturgia']
 else:
-    dados_liturgia = fetch_liturgia(datetime.strptime(data_str_to_fetch, '%Y-%m-%d'))
-    if dados_liturgia:
-        st.session_state['dados_liturgia'] = dados_liturgia
+    try:
+        data_obj_to_fetch = datetime.strptime(data_str_to_fetch, '%Y-%m-%d')
+        dados_liturgia = fetch_liturgia(data_obj_to_fetch)
+        if dados_liturgia:
+            st.session_state['dados_liturgia'] = dados_liturgia
+    except ValueError:
+        st.error("Formato de data inválido. Use AAAA-MM-DD.")
 
 # --- RENDERIZAÇÃO DA LITURGIA (Se disponível) ---
 
@@ -393,6 +402,8 @@ if dados_liturgia:
     # Renderiza os botões de seleção
     cols_leituras = st.columns(len(leituras_disponiveis) if leituras_disponiveis else 1)
     
+    default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
+
     for i, leitura in enumerate(leituras_disponiveis):
         progresso = leitura['progresso']
         status_emoji = get_status_emoji('publicacao', progresso) if progresso.get('publicacao') else get_status_emoji('video', progresso)
@@ -411,14 +422,15 @@ if dados_liturgia:
                  # Detalhe de Progresso
                  if leitura['progresso'] != default_progresso:
                      etapas_completas = sum(leitura['progresso'].values())
-                     st.progress(etapas_completas, text=f"Progresso: {etapas_completas}/7 etapas completas")
+                     # Corrigido para progress bar: divisão pelo número total de etapas
+                     st.progress(etapas_completas / 7, text=f"Progresso: {etapas_completas}/7 etapas completas") 
                  
                  
                  if st.button(btn_label, key=f"select_leitura_{leitura['chave']}", type=btn_type, use_container_width=True):
                     handle_leitura_selection(data_str_to_fetch, leitura['tipo'])
 
 else:
-    st.warning("Liturgia não carregada ou API indisponível. Por favor, tente novamente ou verifique a conexão.")
+    st.warning("Liturgia não carregada. Por favor, tente novamente, verificando se há leituras para a data e a sua conexão com a internet.")
 
 # --- DASHBOARD DE PRODUÇÃO (Tabela) ---
 
@@ -450,7 +462,6 @@ else:
 
 # --- FOOTER ---
 st.markdown("---")
-# LINHA 439 CORRIGIDA: datetime.datetime.now()
 st.caption(f"Dados da liturgia fornecidos por API externa. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
 
