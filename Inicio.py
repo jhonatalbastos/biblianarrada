@@ -9,179 +9,190 @@ from datetime import datetime
 # ---------------------------------------------------------------------
 # CONFIGURAÇÃO DE IMPORTAÇÃO (CRÍTICO)
 # ---------------------------------------------------------------------
-# Garante que a raiz do projeto esteja no caminho de busca do Python
 root_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(root_path)
 
-# Tenta importar o módulo de banco de dados diretamente
 try:
-    # A forma mais segura dada a sua estrutura (modules/database.py)
     import modules.database as db
-except ImportError as e:
-    # Fallback: Tenta importar caso o Python não reconheça "modules" como pacote
+except ImportError:
     try:
         from modules import database as db
-    except ImportError as e2:
-        st.error(f"🚨 Erro Crítico: Não foi possível importar 'modules/database.py'.")
-        st.code(f"Erro 1: {e}\nErro 2: {e2}")
-        st.info("Verifique se o arquivo 'database.py' está dentro da pasta 'modules' e se o nome está todo em minúsculas.")
+    except ImportError:
+        st.error("🚨 Erro Crítico: Não foi possível importar 'modules/database.py'.")
         st.stop()
 
 # --- CONFIGURAÇÃO INICIAL DA PÁGINA ---
 st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
 
-# Inicializa o banco (cria pasta 'data' e arquivo .db se não existirem)
 if hasattr(db, 'init_db'):
     db.init_db()
 else:
-    st.error("O módulo 'database' foi carregado, mas a função 'init_db' não foi encontrada. Verifique o código em 'modules/database.py'.")
+    st.error("Erro no módulo database.")
     st.stop()
 
-# --- FUNÇÕES AUXILIARES (LÓGICA DE NEGÓCIO) ---
+# --- FUNÇÕES AUXILIARES ---
 
 def get_leitura_status_logic(data_str, tipo_leitura):
-    """Retorna o status atual de uma leitura, mesclando com o padrão se necessário."""
     chave = f"{data_str}-{tipo_leitura}"
     default = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
-    
-    # Usa a função do módulo importado
     prog, em_prod = db.load_status(chave)
-    
     if prog:
         default.update(prog)
         return default, em_prod
     return default, 0
 
-# --- TESTE DE CONEXÃO (API VERCEL / PARAMS) ---
-
 def test_api_connection():
-    """Testa DNS e HTTP para a API configurada."""
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
-    
     try:
         from urllib.parse import urlparse
         hostname = urlparse(BASE_URL).netloc or "api-liturgia-diaria.vercel.app"
     except:
         hostname = "api-liturgia-diaria.vercel.app"
-
-    log = [f"🌐 Hostname: **{hostname}**", f"🔗 URL: `{BASE_URL}`"]
-    success = True
     
-    # 1. Teste DNS
+    # Teste simples de DNS para evitar travar a UI
     try:
         socket.getaddrinfo(hostname, 443)
-        log.append("✅ DNS OK.")
-    except socket.gaierror as e:
-        success = False
-        log.append(f"❌ ERRO DNS: {e}")
+        return True
+    except:
+        return False
 
-    # 2. Teste HTTP com parâmetro de data
-    if success:
-        hoje = datetime.today().strftime('%Y-%m-%d')
-        log.append(f"📡 Testando GET: `?date={hoje}`")
-        try:
-            # Importante: params={'date': ...} conforme documentação da API
-            resp = requests.get(BASE_URL, params={'date': hoje}, timeout=10)
-            if resp.status_code == 200:
-                log.append("✅ HTTP 200: Conexão OK.")
-            else:
-                log.append(f"❌ HTTP Erro: {resp.status_code}")
-                success = False
-        except Exception as e:
-            success = False
-            log.append(f"❌ ERRO HTTP: {e}")
-
-    if not success:
-        with st.expander("🚨 DIAGNÓSTICO DE CONEXÃO", expanded=True):
-            st.markdown("\n".join([f"- {l}" for l in log]))
-    
-    return success
-
-# --- INTEGRAÇÃO COM A API ---
+# --- INTEGRAÇÃO COM A API (PARSER CORRIGIDO) ---
 
 def fetch_liturgia(date_obj):
-    """Busca liturgia no Banco Local ou na API Externa."""
+    """Busca liturgia e tenta interpretar múltiplos formatos de JSON."""
     date_str = date_obj.strftime('%Y-%m-%d')
     
-    # 1. Verifica no Banco (Módulo Externo)
+    # 1. Cache Local
     cached = db.carregar_liturgia(date_str)
     if cached:
         st.toast(f"Carregado do banco local: {date_str}", icon="💾")
         return cached
     
-    # 2. Busca na API
+    # 2. API Request
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
     if BASE_URL.endswith('/'): BASE_URL = BASE_URL[:-1]
 
     try:
-        # Usa params para passar a data, conforme a API exige
         response = requests.get(BASE_URL, params={'date': date_str}, timeout=15)
         response.raise_for_status()
         data = response.json()
         
-        # --- PARSER ROBUSTO (ATUALIZADO) ---
         leituras_formatadas = []
-        
-        # Tenta identificar a cor litúrgica em vários lugares possíveis
-        cor = data.get('cor', 'Verde') 
-        if not cor and 'liturgia' in data: 
-            cor = data['liturgia'].get('cor', 'Verde')
+        cor_liturgica = "Verde" # Default
+        nome_dia = "Dia Litúrgico"
 
-        # Mapeamento estendido de chaves possíveis
-        mapeamento = {
-            'primeiraLeitura': 'Primeira Leitura',
-            'segundaLeitura': 'Segunda Leitura',
-            'salmo': 'Salmo Responsorial',
-            'evangelho': 'Evangelho',
-            'leitura1': 'Primeira Leitura', # Caso a API mude
-            'leitura2': 'Segunda Leitura'   # Caso a API mude
-        }
-        
-        for chave_api, titulo in mapeamento.items():
-            if chave_api in data:
-                conteudo = data[chave_api]
-                texto, ref = "", ""
-                
-                if isinstance(conteudo, dict):
-                    # Tenta pegar texto, refrao, ou 'texto' dentro de um sub-objeto
-                    texto = conteudo.get('texto', '') or conteudo.get('refrao', '')
-                    ref = conteudo.get('referencia', '') or conteudo.get('ref', '')
-                elif isinstance(conteudo, str):
-                    texto = conteudo
-                    # Tenta achar a referência em uma chave separada (ex: primeiraLeituraRef)
-                    ref = data.get(f"{chave_api}Ref", "") or data.get(f"{chave_api}Referencia", "")
-                
-                # Só adiciona se tiver algum texto
-                if texto:
-                    leituras_formatadas.append({'tipo': titulo, 'titulo': titulo, 'ref': ref, 'texto': texto})
+        # --- ESTRATÉGIA A: Formato Aninhado "today" (O que você recebeu) ---
+        if 'today' in data:
+            today = data['today']
+            cor_liturgica = today.get('color', 'Verde')
+            nome_dia = today.get('entry_title', 'Dia Litúrgico').replace('<br/>', ' - ')
+            
+            readings = today.get('readings', {})
+            
+            # 1. Primeira Leitura
+            if 'first_reading' in readings:
+                item = readings['first_reading']
+                leituras_formatadas.append({
+                    'tipo': 'Primeira Leitura',
+                    'titulo': 'Primeira Leitura',
+                    'ref': item.get('title', ''), # Ex: "Primeira leitura: Isaías..."
+                    'texto': item.get('text', '')
+                })
 
-        # --- DIAGNÓSTICO DE FALHA NO PARSER ---
+            # 2. Segunda Leitura
+            if 'second_reading' in readings:
+                item = readings['second_reading']
+                leituras_formatadas.append({
+                    'tipo': 'Segunda Leitura',
+                    'titulo': 'Segunda Leitura',
+                    'ref': item.get('title', ''),
+                    'texto': item.get('text', '')
+                })
+
+            # 3. Salmo (Tratamento especial para lista)
+            if 'psalm' in readings:
+                item = readings['psalm']
+                refrao = item.get('response', '')
+                # Se content_psalm for lista, junta. Se for string, usa direto.
+                conteudo_salmo = item.get('content_psalm', [])
+                if isinstance(conteudo_salmo, list):
+                    texto_salmo = "\n".join([str(v) for v in conteudo_salmo])
+                else:
+                    texto_salmo = str(conteudo_salmo)
+                
+                texto_completo = f"Refrão: {refrao}\n\n{texto_salmo}"
+                
+                leituras_formatadas.append({
+                    'tipo': 'Salmo Responsorial',
+                    'titulo': 'Salmo Responsorial',
+                    'ref': item.get('title', ''), # Ex: "Salmo 146"
+                    'texto': texto_completo
+                })
+
+            # 4. Evangelho
+            if 'gospel' in readings:
+                item = readings['gospel']
+                # Tenta pegar head_title, se falhar pega title
+                ref = item.get('head_title', '') or item.get('title', '')
+                leituras_formatadas.append({
+                    'tipo': 'Evangelho',
+                    'titulo': 'Evangelho',
+                    'ref': ref,
+                    'texto': item.get('text', '')
+                })
+
+        # --- ESTRATÉGIA B: Formato Plano (Legado/Outras datas) ---
+        else:
+            # Tenta achar a cor na raiz ou dentro de 'liturgia'
+            cor_liturgica = data.get('cor') or data.get('liturgia', {}).get('cor', 'Verde')
+            nome_dia = data.get('dia', 'Dia Litúrgico')
+
+            mapeamento = {
+                'primeiraLeitura': 'Primeira Leitura',
+                'segundaLeitura': 'Segunda Leitura',
+                'salmo': 'Salmo Responsorial',
+                'evangelho': 'Evangelho'
+            }
+            
+            for chave_api, titulo_sistema in mapeamento.items():
+                if chave_api in data:
+                    conteudo = data[chave_api]
+                    texto, ref = "", ""
+                    
+                    if isinstance(conteudo, dict):
+                        texto = conteudo.get('texto', '') or conteudo.get('refrao', '')
+                        ref = conteudo.get('referencia', '') or conteudo.get('ref', '')
+                    elif isinstance(conteudo, str):
+                        texto = conteudo
+                        ref = data.get(f"{chave_api}Ref", "")
+                    
+                    if texto:
+                        leituras_formatadas.append({'tipo': titulo_sistema, 'titulo': titulo_sistema, 'ref': ref, 'texto': texto})
+
+        # --- VALIDAÇÃO FINAL ---
         if not leituras_formatadas:
-            st.warning("⚠️ JSON recebido, mas o formato não foi reconhecido pelo sistema.")
-            with st.expander("🕵️ Ver JSON Recebido (Para Debug)", expanded=False):
-                st.write("A API retornou os dados abaixo, mas não achei as chaves 'primeiraLeitura', etc.")
+            st.warning("⚠️ JSON recebido, mas o formato não foi reconhecido.")
+            with st.expander("🕵️ Ver JSON Recebido (Para Debug)"):
                 st.json(data)
             return None
 
         final_data = {
             'data': date_str,
-            'nome_dia': data.get('dia', 'Dia Litúrgico'),
-            'cor': cor,
+            'nome_dia': nome_dia,
+            'cor': cor_liturgica,
             'leituras': leituras_formatadas
         }
         
-        # Salva no Banco (Módulo Externo)
         db.salvar_liturgia(date_str, final_data)
         return final_data
 
     except Exception as e:
-        st.error(f"Erro na requisição ou processamento: {e}")
+        st.error(f"Erro na requisição: {e}")
         return None
 
 # --- UI HELPER ---
 
 def handle_leitura_selection(data_str, tipo_leitura):
-    """Prepara a sessão e redireciona para a produção."""
     try:
         dados_dia = fetch_liturgia(datetime.strptime(data_str, '%Y-%m-%d'))
         if not dados_dia: return
@@ -197,7 +208,6 @@ def handle_leitura_selection(data_str, tipo_leitura):
             'progresso_leitura_atual': prog
         })
         
-        # Atualiza Status no Banco
         db.update_status(f"{data_str}-{tipo_leitura}", data_str, tipo_leitura, prog, 1)
         st.switch_page("pages/1_Roteiro_Viral.py")
     except Exception as e:
@@ -205,17 +215,16 @@ def handle_leitura_selection(data_str, tipo_leitura):
 
 # --- EXECUÇÃO PRINCIPAL ---
 if __name__ == '__main__':
-    # Roda o teste silenciosamente, log aparece apenas se falhar
+    # Teste silencioso
     test_api_connection()
 
 st.title("📖 Biblia Narrada: Painel de Produção")
 
-# --- DASHBOARD (EM PRODUÇÃO) ---
+# --- DASHBOARD ---
 st.header("📋 Em Produção")
-status_raw = db.load_status() # Carrega do módulo DB
+status_raw = db.load_status()
 dash_data = []
 
-# Filtra o que exibir
 if status_raw:
     for k, v in status_raw.items():
         if not (v['progresso'].get('publicacao') and not v['em_producao']):
@@ -236,14 +245,13 @@ else:
 
 st.divider()
 
-# --- HISTÓRICO (BANCO LOCAL) ---
-cache = db.listar_historico() # Carrega do módulo DB
+# --- HISTÓRICO ---
+cache = db.listar_historico()
 if cache:
     st.subheader("🗓️ Histórico Local")
     col_c1, col_c2 = st.columns([3,1])
     with col_c1:
-        # Cria lista formatada para o selectbox
-        selected_cache = st.selectbox("Itens salvos no banco:", [f"{c['Data']} - {c['Cor Litúrgica']}" for c in cache], key="sel_cache")
+        selected_cache = st.selectbox("Itens salvos:", [f"{c['Data']} - {c['Cor Litúrgica']}" for c in cache], key="sel_cache")
     with col_c2:
         if st.button("Carregar do Histórico"):
             data_sel = selected_cache.split(' - ')[0]
@@ -252,7 +260,7 @@ if cache:
 
 st.divider()
 
-# --- BUSCA API (NOVA) ---
+# --- BUSCA API ---
 st.header("🔍 Buscar Nova Liturgia")
 c1, c2 = st.columns([1, 2])
 with c1:
@@ -262,24 +270,26 @@ with c2:
     st.write("")
     if st.button("Buscar API Externa", type="primary"):
         st.session_state['data_busca'] = dt_input.strftime('%Y-%m-%d')
-        # Limpa cache da sessão para forçar atualização se necessário
         if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
         st.rerun()
 
-# Processamento da Busca
+# --- RESULTADOS DA BUSCA ---
 data_busca = st.session_state.get('data_busca')
 if data_busca:
     dados = fetch_liturgia(datetime.strptime(data_busca, '%Y-%m-%d'))
     
     if dados:
-        st.success(f"Liturgia: {dados['nome_dia']} ({dados['cor']})")
+        cor_map = {"roxo": "🟣", "verde": "🟢", "vermelho": "🔴", "branco": "⚪", "rosa": "🌸"}
+        cor_emoji = cor_map.get(dados['cor'].lower(), "🎨")
         
-        # Exibe os cards das leituras encontradas
+        st.success(f"{cor_emoji} **{dados['nome_dia']}** ({dados['cor']})")
+        
         if 'leituras' in dados:
             cols = st.columns(len(dados['leituras']))
             for i, l in enumerate(dados['leituras']):
-                with cols[i % 4]: # Wrap se houver muitas colunas
+                with cols[i % 4]:
                     with st.container(border=True):
-                        st.markdown(f"**{l['tipo']}**")
+                        st.subheader(l['tipo'])
+                        st.caption(l['ref'][:50] + "..." if len(l['ref']) > 50 else l['ref'])
                         if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}"):
                             handle_leitura_selection(data_busca, l['tipo'])
