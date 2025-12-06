@@ -3,7 +3,6 @@ import requests
 import sqlite3
 import json
 from datetime import datetime, timedelta
-# Importações de exceções focadas apenas em Requests, sem manipulação de socket/DNS
 from requests.exceptions import Timeout, RequestException, HTTPError 
 
 # --- CONFIGURAÇÃO INICIAL ---
@@ -48,12 +47,29 @@ def carregar_do_banco(data_str):
         return json.loads(res[0])
     return None
 
+def listar_cache_liturgia():
+    """Retorna uma lista de dicionários com data, cor e último acesso do cache."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT data_liturgia, cor, ultimo_acesso FROM historico ORDER BY data_liturgia DESC')
+    rows = c.fetchall()
+    conn.close()
+    
+    lista_cache = []
+    for data, cor, acesso in rows:
+        lista_cache.append({
+            'Data': data,
+            'Cor Litúrgica': cor,
+            'Último Acesso': acesso
+        })
+    return lista_cache
+
 def salvar_no_banco(data_str, json_data):
     """Salva os dados da liturgia (JSON) no cache."""
     conn = get_db_connection()
     c = conn.cursor()
     json_str = json.dumps(json_data)
-    cor = json_data.get('cor', 'Branco') # Assumindo que a cor está no nível superior
+    cor = json_data.get('cor', 'Branco') 
     c.execute('''INSERT OR REPLACE INTO historico 
                  (data_liturgia, json_completo, cor, ultimo_acesso) 
                  VALUES (?, ?, ?, CURRENT_TIMESTAMP)''', 
@@ -64,7 +80,6 @@ def salvar_no_banco(data_str, json_data):
 def load_producao_status(chave=None):
     """
     Carrega o progresso de uma leitura específica ou de todas as leituras ativas.
-    Retorna um dicionário de status se for chamada sem chave.
     """
     conn = get_db_connection()
     c = conn.cursor()
@@ -146,11 +161,9 @@ def fetch_liturgia(date_obj):
         # 3. Processamento e Salvamento
         if data and 'leituras' in data:
             
-            # Formatação básica das leituras para o formato interno
             leituras_formatadas = []
             for leitura in data['leituras']:
                 if 'texto' in leitura and 'titulo' in leitura and 'ref' in leitura:
-                    # Normaliza o tipo de leitura
                     tipo_mapeamento = {
                         "Primeira Leitura": "Primeira Leitura",
                         "Salmo Responsorial": "Salmo",
@@ -166,7 +179,6 @@ def fetch_liturgia(date_obj):
                         'texto': leitura['texto']
                     })
             
-            # Cor Litúrgica
             cor = data.get('cor', 'Branco')
 
             final_data = {
@@ -181,19 +193,23 @@ def fetch_liturgia(date_obj):
         
         else:
             st.error("Resposta da API inválida ou sem leituras.")
-            return None # Retorna None em caso de falha no conteúdo
+            return None 
 
     except Timeout:
         st.error("Erro: Tempo limite da requisição à API excedido.")
     except HTTPError as e:
         st.error(f"Erro HTTP ao buscar dados da API: {e}")
     except RequestException as e:
-        # Captura NameResolutionError, ConnectionError, etc., e reporta ao usuário.
-        st.error(f"Erro ao buscar dados da API. Verifique a conexão de rede/DNS: {e}")
+        # Diagnóstico explícito para o erro de DNS reportado pelo usuário
+        error_str = str(e)
+        if "NameResolutionError" in error_str or "Failed to resolve" in error_str:
+             st.error("🚨 ERRO DE CONEXÃO/DNS 🚨 O aplicativo não conseguiu traduzir 'liturgiadiaria.pt' em um endereço IP. Este é um problema de rede do ambiente de hospedagem (e.g., Streamlit Cloud). Tente **reiniciar a aplicação** ou use a lista de leituras em Cache abaixo.")
+        else:
+             st.error(f"Erro ao buscar dados da API. Verifique a conexão de rede/DNS: {e}")
     except json.JSONDecodeError:
         st.error("Erro ao decodificar a resposta JSON da API.")
         
-    return None # Retorna None em todos os cenários de falha para evitar dados simulados.
+    return None 
 
 # --- FUNÇÕES DE RENDERIZAÇÃO DA DASHBOARD ---
 
@@ -218,7 +234,6 @@ def create_dashboard_table(data_list):
         progresso = default_progresso.copy()
         progresso.update(progresso_raw)
 
-        # Mapeamento do Status Litúrgico
         if progresso.get('publicacao', False) and not em_producao:
             status_liturgico = "🟢 Publicado"
         elif em_producao:
@@ -228,10 +243,6 @@ def create_dashboard_table(data_list):
         else:
             status_liturgico = "⚪ Inativo"
 
-        # Coluna de Ações
-        action_key = f"select_{chave}"
-        
-        # Colunas de Progresso (emojis)
         row = {
             'Data': item['data_liturgia'],
             'Tipo': item['tipo_leitura'],
@@ -243,7 +254,7 @@ def create_dashboard_table(data_list):
             'Legendas': get_status_emoji('legendas', progresso),
             'Vídeo': get_status_emoji('video', progresso),
             'Publicar': get_status_emoji('publicacao', progresso),
-            'Ação': f'<div id="action_btn_{action_key}"></div>' # Placeholder para o botão
+            'Ação': f'<div id="action_btn_{chave}"></div>' 
         }
         table_data.append(row)
         
@@ -258,11 +269,9 @@ def create_dashboard_table(data_list):
         },
         hide_index=True,
         use_container_width=True,
-        # Adiciona tooltip nas colunas de progresso
         column_order=['Data', 'Tipo', 'Status', 'Roteiro', 'Imagem', 'Áudio', 'Overlay', 'Legendas', 'Vídeo', 'Publicar', 'Ação']
     )
     
-    # Processa o clique no botão
     clicked_row_index = st.session_state.get('dashboard_action_btn')
     if clicked_row_index is not None and clicked_row_index != -1:
         selected_item = data_list[clicked_row_index]
@@ -272,12 +281,17 @@ def create_dashboard_table(data_list):
 def handle_leitura_selection(data_str, tipo_leitura):
     """Lida com a seleção de uma leitura e navega para a primeira página de produção."""
     
-    # 1. Carrega os dados completos do dia
-    data_obj = datetime.strptime(data_str, '%Y-%m-%d')
+    # 1. Carrega os dados completos do dia (usa fetch_liturgia, que verifica o cache)
+    try:
+        data_obj = datetime.strptime(data_str, '%Y-%m-%d')
+    except ValueError:
+        st.error(f"Erro: Data inválida para seleção: {data_str}")
+        return
+        
     dados_dia = fetch_liturgia(data_obj) 
     
     if not dados_dia or 'leituras' not in dados_dia:
-        st.error("Erro ao carregar dados da liturgia. Tente recarregar ou buscar novamente.")
+        # Se a busca falhou, a mensagem de erro já foi exibida por fetch_liturgia. Apenas retorna.
         return
         
     # 2. Encontra a leitura específica
@@ -300,43 +314,123 @@ def handle_leitura_selection(data_str, tipo_leitura):
     chave = f"{data_str}-{tipo_leitura}"
     update_producao_status(chave, data_str, tipo_leitura, progresso, 1) # 1 = Em Produção
     
-    # Inicializa artefatos se não existirem
     if 'artefatos' not in st.session_state:
         st.session_state['artefatos'] = {}
     
     st.info(f"Produção de **{tipo_leitura}** de {data_str} iniciada/continuada.")
     st.switch_page("pages/1_Roteiro_Viral.py")
 
+# --- FUNÇÃO PARA SELECIONAR DO CACHE ---
 
-# --- LAYOUT E INTERAÇÃO DO USUÁRIO ---
+def select_from_cache(cached_data_list):
+    """Cria a tabela de dados em cache e permite a seleção da data."""
+    st.subheader("🗓️ Datas Salvas no Cache (Seu Histórico)")
+    
+    if not cached_data_list:
+        st.info("Nenhuma liturgia encontrada no cache local (biblia_narrada_db.sqlite). Se o app estiver no Streamlit Cloud, o cache pode ter sido perdido.")
+        return
+    
+    table_data = []
+    for item in cached_data_list:
+        table_data.append({
+            'Data': item['Data'],
+            'Cor': item['Cor Litúrgica'],
+            'Último Acesso': item['Último Acesso'],
+            'Ação': f'<div id="cache_btn_{item["Data"]}"></div>' 
+        })
 
-# 1. Seleção de Data
+    st.dataframe(
+        table_data,
+        column_config={
+            "Ação": st.column_config.ButtonColumn("Ver Leituras", help="Carregar as leituras desta data para seleção", key="cache_action_btn"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        column_order=['Data', 'Cor', 'Último Acesso', 'Ação']
+    )
+    
+    clicked_row_index = st.session_state.get('cache_action_btn')
+    if clicked_row_index is not None and clicked_row_index != -1:
+        data_str_selecionada = cached_data_list[clicked_row_index]['Data']
+        st.session_state['data_busca'] = data_str_selecionada
+        st.success(f"Liturgia de **{data_str_selecionada}** carregada. Veja a seção 'Seleção de Leitura para Produção' abaixo.")
+        st.rerun()
+
+
+# --- LAYOUT PRINCIPAL ---
+
+# --- Execução Inicial ---
+if __name__ == '__main__':
+    init_db()
+
+st.title("📖 Biblia Narrada: Painel de Produção")
+
+# --- DASHBOARD DE PRODUÇÃO (Tabela) ---
+
+st.header("📋 Dashboard de Leituras em Produção")
+
+leituras_em_producao_full = load_producao_status()
+data_list_dashboard = []
+
+for chave, item in leituras_em_producao_full.items():
+    if not (item['progresso'].get('publicacao', False) and not item.get('em_producao', 0)): 
+        data_list_dashboard.append({
+            'chave': chave,
+            'data_liturgia': item['data_liturgia'],
+            'tipo_leitura': item['tipo_leitura'],
+            'progresso': item['progresso'],
+            'em_producao': item['em_producao']
+        })
+        
+st.session_state['leituras_em_producao'] = leituras_em_producao_full
+
+if data_list_dashboard:
+    create_dashboard_table(data_list_dashboard)
+else:
+    st.info("Nenhuma leitura está marcada como 'Em Produção' ou possui rascunho salvo no momento.")
+
+st.markdown("---")
+
+# --- LISTAGEM DE CACHE ---
+cached_data = listar_cache_liturgia()
+select_from_cache(cached_data)
+
+st.markdown("---")
+
+# --- SELEÇÃO DE DATA / BUSCA DE API ---
+st.header("🔍 Buscar Nova Liturgia (API)")
+
 col1, col2 = st.columns([1, 3])
 
+data_hoje = datetime.today().date()
+# Obtém a data mais relevante (da busca ou a data de hoje) para o seletor
+data_str_to_fetch = st.session_state.get('data_busca', data_hoje.strftime('%Y-%m-%d'))
+try:
+    data_inicial_obj = datetime.strptime(data_str_to_fetch, '%Y-%m-%d').date()
+except ValueError:
+    data_inicial_obj = data_hoje
+
 with col1:
-    data_hoje = datetime.today().date()
     data_selecionada = st.date_input(
         "📅 Selecionar Data da Liturgia",
-        value=data_hoje,
+        value=data_inicial_obj,
         min_value=data_hoje - timedelta(days=180),
         max_value=data_hoje + timedelta(days=365),
         key='data_selecao'
     )
     
 with col2:
-    st.markdown("<br>", unsafe_allow_html=True) # Espaçamento para alinhar o botão
+    st.markdown("<br>", unsafe_allow_html=True) 
 
-    if st.button("🔍 Buscar Liturgia e Atualizar Dashboard", type="primary", use_container_width=True):
+    if st.button("Buscar Liturgia (API/Cache)", type="primary", use_container_width=True):
         st.session_state['data_busca'] = data_selecionada.strftime('%Y-%m-%d')
         st.rerun()
 
-# --- LÓGICA DE BUSCA E PROCESSAMENTO DE DADOS ---
+# LÓGICA DE BUSCA E PROCESSAMENTO DE DADOS (Executado após Rerun)
+# Se a data do input for diferente da data da última busca, atualiza a data de busca
+if data_selecionada.strftime('%Y-%m-%d') != st.session_state.get('data_busca'):
+    data_str_to_fetch = data_selecionada.strftime('%Y-%m-%d')
 
-# A data a ser buscada/processada é a data do input, a menos que o botão "Buscar" tenha sido clicado.
-data_str_input = data_selecionada.strftime('%Y-%m-%d')
-data_str_to_fetch = st.session_state.get('data_busca', data_str_input)
-
-# Verifica se precisa buscar os dados da liturgia
 dados_liturgia = None
 if 'dados_liturgia' in st.session_state and st.session_state['dados_liturgia'].get('data') == data_str_to_fetch:
     dados_liturgia = st.session_state['dados_liturgia']
@@ -357,7 +451,6 @@ if dados_liturgia:
     liturgia_info = f"**{dados_liturgia.get('nome_dia', 'Dia Litúrgico')}**"
     cor_liturgica = dados_liturgia.get('cor', 'Branco')
     
-    # Adiciona cor de fundo baseada na cor litúrgica (simulação)
     cor_map = {
         'Verde': '#d4edda', 
         'Branco': '#f8f9fa', 
@@ -379,27 +472,21 @@ if dados_liturgia:
     
     leituras_disponiveis = []
     
-    # Prepara a lista de leituras e checa o progresso
     if 'leituras' in dados_liturgia:
         for leitura in dados_liturgia['leituras']:
             tipo_leitura = leitura['tipo']
             chave = f"{data_str_to_fetch}-{tipo_leitura}"
             progresso, em_producao = get_leitura_status(data_str_to_fetch, tipo_leitura)
             
-            # Checa se esta leitura está na lista de produções ativas (para o dashboard)
-            is_active_prod = chave in st.session_state.get('leituras_em_producao', {})
-            
             leituras_disponiveis.append({
                 'tipo': tipo_leitura,
                 'ref': leitura['ref'],
                 'progresso': progresso,
                 'em_producao': em_producao,
-                'is_active_prod': is_active_prod,
                 'chave': chave
             })
 
     
-    # Renderiza os botões de seleção
     cols_leituras = st.columns(len(leituras_disponiveis) if leituras_disponiveis else 1)
     
     default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
@@ -410,19 +497,15 @@ if dados_liturgia:
         
         btn_label = f"{status_emoji} {leitura['tipo']}"
         
-        # Define o tipo do botão: primary se já estiver em produção, secundário caso contrário
         btn_type = "primary" if leitura['em_producao'] else "secondary"
         
         with cols_leituras[i]:
-             # Usa um container expander/info para a visualização da ref/progresso
              with st.container(border=True):
                  st.markdown(f"**{leitura['tipo']}**")
                  st.caption(leitura['ref'])
                  
-                 # Detalhe de Progresso
                  if leitura['progresso'] != default_progresso:
                      etapas_completas = sum(leitura['progresso'].values())
-                     # Corrigido para progress bar: divisão pelo número total de etapas
                      st.progress(etapas_completas / 7, text=f"Progresso: {etapas_completas}/7 etapas completas") 
                  
                  
@@ -430,42 +513,8 @@ if dados_liturgia:
                     handle_leitura_selection(data_str_to_fetch, leitura['tipo'])
 
 else:
-    st.warning("Liturgia não carregada. Por favor, tente novamente, verificando se há leituras para a data e a sua conexão com a internet.")
-
-# --- DASHBOARD DE PRODUÇÃO (Tabela) ---
-
-st.markdown("---")
-st.header("📋 Dashboard de Leituras em Produção")
-
-# Carrega e exibe a lista completa de produções ativas
-leituras_em_producao_full = load_producao_status()
-data_list_dashboard = []
-
-# Mapeia os dados carregados para o formato da tabela
-for chave, item in leituras_em_producao_full.items():
-    if not (item['progresso'].get('publicacao', False) and not item.get('em_producao', 0)): # Exclui os que foram publicados e desativados
-        data_list_dashboard.append({
-            'chave': chave,
-            'data_liturgia': item['data_liturgia'],
-            'tipo_leitura': item['tipo_leitura'],
-            'progresso': item['progresso'],
-            'em_producao': item['em_producao']
-        })
-        
-# Atualiza o estado global das leituras em produção (usado pela barra de navegação)
-st.session_state['leituras_em_producao'] = leituras_em_producao_full
-
-if data_list_dashboard:
-    create_dashboard_table(data_list_dashboard)
-else:
-    st.info("Nenhuma leitura está marcada como 'Em Produção' ou possui rascunho salvo no momento.")
+    st.warning("Liturgia não carregada. Por favor, use a lista do cache ou tente buscar uma nova data na API.")
 
 # --- FOOTER ---
 st.markdown("---")
 st.caption(f"Dados da liturgia fornecidos por API externa. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-
-
-# --- Execução Inicial ---
-if __name__ == '__main__':
-    # Garante que o DB está pronto antes de qualquer interação
-    init_db()
