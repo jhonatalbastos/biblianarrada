@@ -4,10 +4,11 @@ import os
 import requests
 import json
 import socket
+import re # Importante para limpar os títulos
 from datetime import datetime
 
 # ---------------------------------------------------------------------
-# CONFIGURAÇÃO DE IMPORTAÇÃO (CRÍTICO)
+# CONFIGURAÇÃO DE IMPORTAÇÃO
 # ---------------------------------------------------------------------
 root_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(root_path)
@@ -32,6 +33,35 @@ else:
 
 # --- FUNÇÕES AUXILIARES ---
 
+def limpar_referencia(texto, tipo):
+    """
+    Remove prefixos litúrgicos para deixar apenas a referência bíblica.
+    Ex: 'Primeira leitura: Isaías 30' -> 'Isaías 30'
+    Ex: 'Evangelho... segundo São Mateus' -> 'São Mateus...'
+    """
+    if not texto: return ""
+    
+    # Se for Salmo, geralmente queremos manter o formato "Salmo X (Y)"
+    if tipo == "Salmo Responsorial":
+        return texto
+
+    # Remove "Primeira leitura:", "Segunda leitura:" (case insensitive)
+    texto = re.sub(r'^(Primeira|Segunda)\s+leitura\s*[:|-]?\s*', '', texto, flags=re.IGNORECASE)
+    
+    # Remove "Leitura do..."
+    texto = re.sub(r'^Leitura\s+d[oa]\s+', '', texto, flags=re.IGNORECASE)
+
+    # Limpeza específica para Evangelho
+    if tipo == "Evangelho":
+        # Remove "Proclamação do Evangelho..." ou "Evangelho... segundo"
+        texto = re.sub(r'^(Proclamação do\s+)?Evangelho(\s+de Jesus Cristo)?\s+segundo\s+', '', texto, flags=re.IGNORECASE)
+        # Tenta formatar "Mateus 9" para "Mateus, Cap. 9" (Opcional, mas atende seu pedido visual)
+        # Adiciona "Cap." se houver um número logo após o nome do livro
+        # Ex: "São Mateus 9,..." -> "São Mateus, Cap. 9,..."
+        texto = re.sub(r'([A-Za-z])\s+(\d+)', r'\1, Cap. \2', texto)
+
+    return texto.strip()
+
 def get_leitura_status_logic(data_str, tipo_leitura):
     chave = f"{data_str}-{tipo_leitura}"
     default = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
@@ -49,17 +79,15 @@ def test_api_connection():
     except:
         hostname = "api-liturgia-diaria.vercel.app"
     
-    # Teste simples de DNS para evitar travar a UI
     try:
         socket.getaddrinfo(hostname, 443)
         return True
     except:
         return False
 
-# --- INTEGRAÇÃO COM A API (PARSER CORRIGIDO) ---
+# --- INTEGRAÇÃO COM A API ---
 
 def fetch_liturgia(date_obj):
-    """Busca liturgia e tenta interpretar múltiplos formatos de JSON."""
     date_str = date_obj.strftime('%Y-%m-%d')
     
     # 1. Cache Local
@@ -78,75 +106,54 @@ def fetch_liturgia(date_obj):
         data = response.json()
         
         leituras_formatadas = []
-        cor_liturgica = "Verde" # Default
+        cor_liturgica = "Verde"
         nome_dia = "Dia Litúrgico"
 
-        # --- ESTRATÉGIA A: Formato Aninhado "today" (O que você recebeu) ---
+        # --- PARSER DO JSON ---
         if 'today' in data:
             today = data['today']
             cor_liturgica = today.get('color', 'Verde')
             nome_dia = today.get('entry_title', 'Dia Litúrgico').replace('<br/>', ' - ')
-            
             readings = today.get('readings', {})
             
-            # 1. Primeira Leitura
-            if 'first_reading' in readings:
-                item = readings['first_reading']
-                leituras_formatadas.append({
-                    'tipo': 'Primeira Leitura',
-                    'titulo': 'Primeira Leitura',
-                    'ref': item.get('title', ''), # Ex: "Primeira leitura: Isaías..."
-                    'texto': item.get('text', '')
-                })
-
-            # 2. Segunda Leitura
-            if 'second_reading' in readings:
-                item = readings['second_reading']
-                leituras_formatadas.append({
-                    'tipo': 'Segunda Leitura',
-                    'titulo': 'Segunda Leitura',
-                    'ref': item.get('title', ''),
-                    'texto': item.get('text', '')
-                })
-
-            # 3. Salmo (Tratamento especial para lista)
-            if 'psalm' in readings:
-                item = readings['psalm']
-                refrao = item.get('response', '')
-                # Se content_psalm for lista, junta. Se for string, usa direto.
-                conteudo_salmo = item.get('content_psalm', [])
-                if isinstance(conteudo_salmo, list):
-                    texto_salmo = "\n".join([str(v) for v in conteudo_salmo])
-                else:
-                    texto_salmo = str(conteudo_salmo)
+            # Helper para processar cada item
+            def processar_item(tipo_sistema, item_api, ref_key='title'):
+                if not item_api: return
                 
-                texto_completo = f"Refrão: {refrao}\n\n{texto_salmo}"
+                # Pega a referência bruta (Ex: "Primeira leitura: Isaías...")
+                ref_bruta = item_api.get(ref_key, '') or item_api.get('head_title', '')
                 
+                # Limpa a referência para o formato desejado
+                ref_limpa = limpar_referencia(ref_bruta, tipo_sistema)
+                
+                # Tratamento especial para Salmo (texto)
+                texto_final = item_api.get('text', '')
+                if tipo_sistema == 'Salmo Responsorial':
+                    refrao = item_api.get('response', '')
+                    conteudo = item_api.get('content_psalm', [])
+                    if isinstance(conteudo, list):
+                        corpo_salmo = "\n".join([str(v) for v in conteudo])
+                    else:
+                        corpo_salmo = str(conteudo)
+                    texto_final = f"Refrão: {refrao}\n\n{corpo_salmo}"
+
                 leituras_formatadas.append({
-                    'tipo': 'Salmo Responsorial',
-                    'titulo': 'Salmo Responsorial',
-                    'ref': item.get('title', ''), # Ex: "Salmo 146"
-                    'texto': texto_completo
+                    'tipo': tipo_sistema,
+                    'titulo': tipo_sistema, # Título fixo (Header do Card)
+                    'ref': ref_limpa,       # Referência limpa (Subheader)
+                    'texto': texto_final
                 })
 
-            # 4. Evangelho
-            if 'gospel' in readings:
-                item = readings['gospel']
-                # Tenta pegar head_title, se falhar pega title
-                ref = item.get('head_title', '') or item.get('title', '')
-                leituras_formatadas.append({
-                    'tipo': 'Evangelho',
-                    'titulo': 'Evangelho',
-                    'ref': ref,
-                    'texto': item.get('text', '')
-                })
+            processar_item('Primeira Leitura', readings.get('first_reading'))
+            processar_item('Segunda Leitura', readings.get('second_reading'))
+            processar_item('Salmo Responsorial', readings.get('psalm'))
+            processar_item('Evangelho', readings.get('gospel'))
 
-        # --- ESTRATÉGIA B: Formato Plano (Legado/Outras datas) ---
         else:
-            # Tenta achar a cor na raiz ou dentro de 'liturgia'
+            # Fallback para formato antigo/plano
             cor_liturgica = data.get('cor') or data.get('liturgia', {}).get('cor', 'Verde')
             nome_dia = data.get('dia', 'Dia Litúrgico')
-
+            
             mapeamento = {
                 'primeiraLeitura': 'Primeira Leitura',
                 'segundaLeitura': 'Segunda Leitura',
@@ -154,26 +161,30 @@ def fetch_liturgia(date_obj):
                 'evangelho': 'Evangelho'
             }
             
-            for chave_api, titulo_sistema in mapeamento.items():
-                if chave_api in data:
-                    conteudo = data[chave_api]
-                    texto, ref = "", ""
+            for chave, tipo_sis in mapeamento.items():
+                if chave in data:
+                    conteudo = data[chave]
+                    ref_bruta = ""
+                    texto = ""
                     
                     if isinstance(conteudo, dict):
                         texto = conteudo.get('texto', '') or conteudo.get('refrao', '')
-                        ref = conteudo.get('referencia', '') or conteudo.get('ref', '')
+                        ref_bruta = conteudo.get('referencia', '') or conteudo.get('ref', '')
                     elif isinstance(conteudo, str):
                         texto = conteudo
-                        ref = data.get(f"{chave_api}Ref", "")
-                    
-                    if texto:
-                        leituras_formatadas.append({'tipo': titulo_sistema, 'titulo': titulo_sistema, 'ref': ref, 'texto': texto})
+                        ref_bruta = data.get(f"{chave}Ref", "")
 
-        # --- VALIDAÇÃO FINAL ---
+                    if texto:
+                        ref_limpa = limpar_referencia(ref_bruta, tipo_sis)
+                        leituras_formatadas.append({
+                            'tipo': tipo_sis,
+                            'titulo': tipo_sis,
+                            'ref': ref_limpa,
+                            'texto': texto
+                        })
+
         if not leituras_formatadas:
             st.warning("⚠️ JSON recebido, mas o formato não foi reconhecido.")
-            with st.expander("🕵️ Ver JSON Recebido (Para Debug)"):
-                st.json(data)
             return None
 
         final_data = {
@@ -215,7 +226,6 @@ def handle_leitura_selection(data_str, tipo_leitura):
 
 # --- EXECUÇÃO PRINCIPAL ---
 if __name__ == '__main__':
-    # Teste silencioso
     test_api_connection()
 
 st.title("📖 Biblia Narrada: Painel de Produção")
@@ -273,7 +283,7 @@ with c2:
         if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
         st.rerun()
 
-# --- RESULTADOS DA BUSCA ---
+# --- RESULTADOS ---
 data_busca = st.session_state.get('data_busca')
 if data_busca:
     dados = fetch_liturgia(datetime.strptime(data_busca, '%Y-%m-%d'))
@@ -285,11 +295,21 @@ if data_busca:
         st.success(f"{cor_emoji} **{dados['nome_dia']}** ({dados['cor']})")
         
         if 'leituras' in dados:
+            # Layout em Colunas
             cols = st.columns(len(dados['leituras']))
             for i, l in enumerate(dados['leituras']):
                 with cols[i % 4]:
                     with st.container(border=True):
+                        # Cabeçalho Principal (Tipo)
                         st.subheader(l['tipo'])
-                        st.caption(l['ref'][:50] + "..." if len(l['ref']) > 50 else l['ref'])
-                        if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}"):
+                        
+                        # Referência Limpa (Ex: Isaías 30, ...)
+                        # Se não tiver ref, exibe um traço
+                        ref_display = l['ref'] if l['ref'] else ""
+                        if ref_display:
+                            st.markdown(f"**{ref_display}**")
+                        
+                        st.markdown("---")
+                        
+                        if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}", use_container_width=True):
                             handle_leitura_selection(data_busca, l['tipo'])
