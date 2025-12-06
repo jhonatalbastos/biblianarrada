@@ -138,7 +138,7 @@ def get_leitura_status(data_str, tipo_leitura):
 
 def fetch_liturgia(date_obj):
     """
-    Busca a liturgia do dia na API externa ou no cache local.
+    Busca a liturgia do dia na API externa (usando o endpoint Vercel/Proxy) ou no cache local.
     """
     date_str = date_obj.strftime('%Y-%m-%d')
     
@@ -148,10 +148,13 @@ def fetch_liturgia(date_obj):
         st.info(f"Dados de **{date_str}** carregados do cache local.")
         return cached_data
     
-    # 2. Se não estiver no cache, busca na API
-    API_URL = f"https://liturgiadiaria.pt/api/v1/liturgia/{date_str}"
+    # 2. Define o endpoint da API
+    # Prioriza o segredo (API Vercel/Proxy) ou usa uma API pública alternativa
+    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api.liturgiadiaria.net/api/v1/liturgia")
     
-    st.info(f"Buscando dados da liturgia para {date_str} na API externa...")
+    API_URL = f"{BASE_URL}/{date_str}"
+    
+    st.info(f"Buscando dados da liturgia para {date_str} em: {BASE_URL}...")
     
     try:
         response = requests.get(API_URL, timeout=10)
@@ -200,12 +203,8 @@ def fetch_liturgia(date_obj):
     except HTTPError as e:
         st.error(f"Erro HTTP ao buscar dados da API: {e}")
     except RequestException as e:
-        # Diagnóstico explícito para o erro de DNS reportado pelo usuário
-        error_str = str(e)
-        if "NameResolutionError" in error_str or "Failed to resolve" in error_str:
-             st.error("🚨 ERRO DE CONEXÃO/DNS 🚨 O aplicativo não conseguiu traduzir 'liturgiadiaria.pt' em um endereço IP. Este é um problema de rede do ambiente de hospedagem (e.g., Streamlit Cloud). Tente **reiniciar a aplicação** ou use a lista de leituras em Cache abaixo.")
-        else:
-             st.error(f"Erro ao buscar dados da API. Verifique a conexão de rede/DNS: {e}")
+        # Diagnóstico de rede mais genérico, já que a URL deve ser resolvida via proxy/Vercel
+        st.error(f"🚨 ERRO DE CONEXÃO 🚨 Falha ao tentar buscar dados da URL: {API_URL}. Verifique se a URL está correta e acessível. Detalhe do erro: {e}")
     except json.JSONDecodeError:
         st.error("Erro ao decodificar a resposta JSON da API.")
         
@@ -327,7 +326,7 @@ def select_from_cache(cached_data_list):
     st.subheader("🗓️ Datas Salvas no Cache (Seu Histórico)")
     
     if not cached_data_list:
-        st.info("Nenhuma liturgia encontrada no cache local (biblia_narrada_db.sqlite). Se o app estiver no Streamlit Cloud, o cache pode ter sido perdido.")
+        st.info("Nenhuma liturgia encontrada no cache local (biblia_narrada_db.sqlite).")
         return
     
     table_data = []
@@ -517,4 +516,6 @@ else:
 
 # --- FOOTER ---
 st.markdown("---")
-st.caption(f"Dados da liturgia fornecidos por API externa. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+# A variável BASE_URL é definida dentro de fetch_liturgia, então usamos o segredo ou o fallback aqui para o aviso
+api_warning_url = st.secrets.get("LITURGIA_API_BASE_URL", "api.liturgiadiaria.net")
+st.caption(f"Dados da liturgia fornecidos por {api_warning_url}. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
