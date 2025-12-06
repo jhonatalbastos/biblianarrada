@@ -1,8 +1,11 @@
 import sys
 import os
 
-# --- CORREÇÃO DE IMPORTAÇÃO (CRÍTICO PARA STREAMLIT CLOUD) ---
-# Adiciona o diretório atual ao sys.path antes de importar módulos locais
+# ---------------------------------------------------------------------
+# CORREÇÃO DE IMPORTAÇÃO (CRÍTICO PARA STREAMLIT CLOUD)
+# Adiciona o diretório onde este arquivo está ao caminho de busca do Python.
+# Isso garante que a pasta 'modules' seja encontrada corretamente.
+# ---------------------------------------------------------------------
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
@@ -10,17 +13,24 @@ import requests
 import json
 import socket
 from datetime import datetime
-from modules import database as db  # Agora a importação funcionará
+
+# Tenta importar o módulo de banco de dados
+try:
+    from modules import database as db
+except ImportError as e:
+    st.error(f"🚨 Erro de Importação: O Python não encontrou o arquivo 'modules/database.py'. Detalhe: {e}")
+    st.stop()
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
 
-# Inicializa o banco via módulo externo
+# Inicializa o banco (cria pasta 'data' e arquivo .db se não existirem)
 db.init_db()
 
-# --- FUNÇÕES AUXILIARES ---
+# --- FUNÇÕES AUXILIARES (LÓGICA DE NEGÓCIO) ---
 
 def get_leitura_status_logic(data_str, tipo_leitura):
+    """Retorna o status atual de uma leitura, mesclando com o padrão se necessário."""
     chave = f"{data_str}-{tipo_leitura}"
     default = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
     prog, em_prod = db.load_status(chave)
@@ -30,7 +40,9 @@ def get_leitura_status_logic(data_str, tipo_leitura):
     return default, 0
 
 # --- TESTE DE CONEXÃO (API VERCEL / PARAMS) ---
+
 def test_api_connection():
+    """Testa DNS e HTTP para a API configurada."""
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
     
     try:
@@ -75,6 +87,7 @@ def test_api_connection():
 # --- INTEGRAÇÃO COM A API ---
 
 def fetch_liturgia(date_obj):
+    """Busca liturgia no Banco Local ou na API Externa."""
     date_str = date_obj.strftime('%Y-%m-%d')
     
     # 1. Verifica no Banco (Módulo Externo)
@@ -93,7 +106,7 @@ def fetch_liturgia(date_obj):
         response.raise_for_status()
         data = response.json()
         
-        # Parser Robusto
+        # Parser Robusto (Adaptação para formato Josué Santos/Vercel)
         leituras_formatadas = []
         cor = data.get('cor', 'Verde') 
         if not cor and 'liturgia' in data: cor = data['liturgia'].get('cor', 'Verde')
@@ -140,7 +153,9 @@ def fetch_liturgia(date_obj):
         return None
 
 # --- UI HELPER ---
+
 def handle_leitura_selection(data_str, tipo_leitura):
+    """Prepara a sessão e redireciona para a produção."""
     try:
         dados_dia = fetch_liturgia(datetime.strptime(data_str, '%Y-%m-%d'))
         if not dados_dia: return
@@ -164,17 +179,21 @@ def handle_leitura_selection(data_str, tipo_leitura):
 
 # --- EXECUÇÃO PRINCIPAL ---
 if __name__ == '__main__':
+    # Roda o teste silenciosamente, log aparece apenas se falhar
     test_api_connection()
 
 st.title("📖 Biblia Narrada: Painel de Produção")
 
-# --- DASHBOARD ---
+# --- DASHBOARD (EM PRODUÇÃO) ---
 st.header("📋 Em Produção")
 status_raw = db.load_status() # Carrega do módulo DB
 dash_data = []
-for k, v in status_raw.items():
-    if not (v['progresso'].get('publicacao') and not v['em_producao']):
-        dash_data.append({'chave': k, **v})
+
+# Filtra o que exibir
+if status_raw:
+    for k, v in status_raw.items():
+        if not (v['progresso'].get('publicacao') and not v['em_producao']):
+            dash_data.append({'chave': k, **v})
 
 if dash_data:
     cols = st.columns(4)
@@ -191,22 +210,23 @@ else:
 
 st.divider()
 
-# --- HISTÓRICO ---
+# --- HISTÓRICO (BANCO LOCAL) ---
 cache = db.listar_historico() # Carrega do módulo DB
 if cache:
     st.subheader("🗓️ Histórico Local")
     col_c1, col_c2 = st.columns([3,1])
     with col_c1:
+        # Cria lista formatada para o selectbox
         selected_cache = st.selectbox("Itens salvos no banco:", [f"{c['Data']} - {c['Cor Litúrgica']}" for c in cache], key="sel_cache")
     with col_c2:
-        if st.button("Carregar"):
+        if st.button("Carregar do Histórico"):
             data_sel = selected_cache.split(' - ')[0]
             st.session_state['data_busca'] = data_sel
             st.rerun()
 
 st.divider()
 
-# --- BUSCA API ---
+# --- BUSCA API (NOVA) ---
 st.header("🔍 Buscar Nova Liturgia")
 c1, c2 = st.columns([1, 2])
 with c1:
@@ -216,19 +236,24 @@ with c2:
     st.write("")
     if st.button("Buscar API Externa", type="primary"):
         st.session_state['data_busca'] = dt_input.strftime('%Y-%m-%d')
+        # Limpa cache da sessão para forçar atualização se necessário
         if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
         st.rerun()
 
+# Processamento da Busca
 data_busca = st.session_state.get('data_busca')
 if data_busca:
     dados = fetch_liturgia(datetime.strptime(data_busca, '%Y-%m-%d'))
     
     if dados:
         st.success(f"Liturgia: {dados['nome_dia']} ({dados['cor']})")
-        cols = st.columns(len(dados['leituras']))
-        for i, l in enumerate(dados['leituras']):
-            with cols[i % 4]:
-                with st.container(border=True):
-                    st.markdown(f"**{l['tipo']}**")
-                    if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}"):
-                        handle_leitura_selection(data_busca, l['tipo'])
+        
+        # Exibe os cards das leituras encontradas
+        if 'leituras' in dados:
+            cols = st.columns(len(dados['leituras']))
+            for i, l in enumerate(dados['leituras']):
+                with cols[i % 4]: # Wrap se houver muitas colunas
+                    with st.container(border=True):
+                        st.markdown(f"**{l['tipo']}**")
+                        if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}"):
+                            handle_leitura_selection(data_busca, l['tipo'])
