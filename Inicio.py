@@ -1,113 +1,37 @@
 import streamlit as st
-import sys
-import os
+import datetime
 import requests
-import json
-import socket
-import re
-from datetime import datetime
+import database as db  # Seu módulo de banco de dados local
+# import audio_generator as ag # Descomente se tiver o gerador de áudio
 
-# ---------------------------------------------------------------------
-# CONFIGURAÇÃO DE IMPORTAÇÃO
-# ---------------------------------------------------------------------
-root_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(root_path)
-
-try:
-    import modules.database as db
-except ImportError:
-    try:
-        from modules import database as db
-    except ImportError:
-        st.error("🚨 Erro Crítico: Não foi possível importar 'modules/database.py'.")
-        st.stop()
-
-# --- CONFIGURAÇÃO INICIAL DA PÁGINA ---
-st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
-
-if hasattr(db, 'init_db'):
-    db.init_db()
-else:
-    st.error("Erro no módulo database.")
-    st.stop()
-
-# --- MAPA DE ABREVIAÇÕES ---
-LIVROS_EXTENSO = {
-    "Mt": "Mateus", "Mc": "Marcos", "Lc": "Lucas", "Jo": "João",
-    "Gn": "Gênesis", "Ex": "Êxodo", "Lv": "Levítico", "Nm": "Números", "Dt": "Deuteronômio",
-    "Is": "Isaías", "Jr": "Jeremias", "Ez": "Ezequiel", "Dn": "Daniel",
-    "Sl": "Salmo", "At": "Atos dos Apóstolos", "Rm": "Romanos", "1Cor": "1ª Coríntios",
-    "2Cor": "2ª Coríntios", "Gl": "Gálatas", "Ef": "Efésios", "Fp": "Filipenses",
-    "Cl": "Colossenses", "1Ts": "1ª Tessalonicenses", "2Ts": "2ª Tessalonicenses",
-    "1Tm": "1ª Timóteo", "2Tm": "2ª Timóteo", "Tt": "Tito", "Fm": "Filemom",
-    "Hb": "Hebreus", "Tg": "Tiago", "1Pd": "1ª Pedro", "2Pd": "2ª Pedro",
-    "1Jo": "1ª João", "2Jo": "2ª João", "3Jo": "3ª João", "Jd": "Judas", "Ap": "Apocalipse"
-}
+# Configuração da Página
+st.set_page_config(
+    page_title="Bíblia Narrada",
+    page_icon="📖",
+    layout="centered"
+)
 
 # --- FUNÇÕES AUXILIARES ---
 
-def formatar_referencia(ref_bruta, tipo):
-    """
-    Formata referências da API v2 para o estilo desejado.
-    """
-    if not ref_bruta: return ""
-    
-    if tipo == "Salmo Responsorial":
-        return ref_bruta
-
-    partes = ref_bruta.split(" ", 1)
-    if len(partes) == 2:
-        livro_abrev, resto = partes
-        livro_nome = LIVROS_EXTENSO.get(livro_abrev, livro_abrev)
-        texto_ref = f"{livro_nome} {resto}"
-    else:
-        texto_ref = ref_bruta
-
-    if tipo == "Evangelho":
-        texto_ref = re.sub(r'\b(São|Santo|Santa)\s+', '', texto_ref, flags=re.IGNORECASE)
-        texto_ref = re.sub(r'([A-Za-zÀ-ÿ]+)\s+(\d+)', r'\1, Cap. \2', texto_ref)
-
-    return texto_ref
-
-def get_leitura_status_logic(data_str, tipo_leitura):
-    chave = f"{data_str}-{tipo_leitura}"
-    default = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
-    prog, em_prod = db.load_status(chave)
-    if prog:
-        default.update(prog)
-        return default, em_prod
-    return default, 0
-
-def test_api_connection():
-    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://liturgia.up.railway.app")
-    try:
-        from urllib.parse import urlparse
-        hostname = urlparse(BASE_URL).netloc or "liturgia.up.railway.app"
-        socket.getaddrinfo(hostname, 443)
-        return True
-    except:
-        return False
-
-# --- INTEGRAÇÃO COM A API V2 (CORRIGIDA) ---
+def formatar_referencia(ref_raw, tipo):
+    """Limpa e padroniza a referência bíblica."""
+    if not ref_raw:
+        return tipo
+    return ref_raw.strip()
 
 def fetch_liturgia(date_obj):
-    # Formato para salvar no banco (ID)
+    """
+    Busca a liturgia na API V2 (Railway) respeitando a estrutura de Arrays e Extras.
+    """
+    # 1. Verifica Cache Local
     date_str_db = date_obj.strftime('%Y-%m-%d')
-    
-    # 1. Cache Local
     cached = db.carregar_liturgia(date_str_db)
     if cached:
-        st.toast(f"Carregado do banco local: {date_str_db}", icon="💾")
+        # st.toast(f"Carregado do cache: {date_str_db}", icon="💾")
         return cached
-    
-    # 2. API Request
-    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://liturgia.up.railway.app")
-    if BASE_URL.endswith('/'): BASE_URL = BASE_URL[:-1]
-    
-    # CORREÇÃO: Usando Query Parameters conforme documentação v2
-    # Endpoint: /v2/
-    API_ENDPOINT = f"{BASE_URL}/v2/"
-    
+
+    # 2. Requisição para API V2
+    BASE_URL = "https://liturgia.up.railway.app/v2/"
     params = {
         "dia": date_obj.day,
         "mes": date_obj.month,
@@ -115,43 +39,101 @@ def fetch_liturgia(date_obj):
     }
 
     try:
-        # requests.get cuida de montar a URL ?dia=X&mes=Y&ano=Z
-        response = requests.get(API_ENDPOINT, params=params, timeout=15)
+        response = requests.get(BASE_URL, params=params, timeout=15)
+        
+        if response.status_code == 404:
+            st.warning("Liturgia não encontrada para esta data.")
+            return None
+            
         response.raise_for_status()
         data = response.json()
+
+        # Extração de Metadados
+        cor_liturgica = data.get('cor', 'Verde')
+        nome_dia = data.get('liturgia', data.get('dia', 'Dia Litúrgico'))
         
+        # Lista final de leituras
         leituras_formatadas = []
         
-        cor_liturgica = data.get('cor', 'Verde')
-        nome_dia = data.get('dia', 'Dia Litúrgico') # O campo 'dia' na resposta costuma vir o nome do santo ou festa
+        # Acesso seguro ao objeto 'leituras'
+        obj_leituras = data.get('leituras', {})
 
-        def extrair_v2(chave_json, titulo_sistema):
-            if chave_json in data:
-                item = data[chave_json]
+        # --- Lógica de Processamento da V2 (Arrays) ---
+        
+        def processar_secao(chave_json, titulo_padrao):
+            """Processa uma chave (que deve ser uma lista) do JSON."""
+            itens = obj_leituras.get(chave_json, [])
+            
+            # Se vier vazio ou None, ignora
+            if not itens: 
+                return
+
+            # Garante que é lista (caso a API mude comportamento)
+            if isinstance(itens, dict): itens = [itens]
+            
+            for i, item in enumerate(itens):
+                # Define o Tipo/Título da seção
+                # Prioridade: 'tipo' (ex: "Terceira Leitura") > titulo_padrao
+                tipo_leitura = item.get('tipo', titulo_padrao)
+                
+                # Se houver mais de uma opção para a mesma leitura (ex: Breve/Longa)
+                if len(itens) > 1 and chave_json not in ['extras']:
+                    # Tenta pegar distinção no título ou referência
+                    ref = item.get('referencia', '')
+                    if "Breve" in ref or "Breve" in item.get('titulo', ''):
+                        sufixo = " (Forma Breve)"
+                    elif "Longa" in ref or "Longa" in item.get('titulo', ''):
+                        sufixo = " (Forma Longa)"
+                    else:
+                        sufixo = f" (Opção {i+1})"
+                    tipo_leitura += sufixo
+
+                # Extração dos dados
                 ref_bruta = item.get('referencia', '')
                 texto = item.get('texto', '')
-                
+                titulo_texto = item.get('titulo', '')
+
+                # Tratamento especial para Salmo (Refrão)
                 if chave_json == 'salmo':
+                    tipo_leitura = "Salmo Responsorial" # Força o nome padrão
                     refrao = item.get('refrao', '')
                     if refrao:
                         texto = f"Refrão: {refrao}\n\n{texto}"
-                
-                ref_final = formatar_referencia(ref_bruta, titulo_sistema)
-                
+
+                # Adiciona à lista final se tiver texto
+                if texto:
+                    leituras_formatadas.append({
+                        'tipo': tipo_leitura,
+                        'titulo': titulo_texto if titulo_texto else tipo_leitura,
+                        'ref': formatar_referencia(ref_bruta, tipo_leitura),
+                        'texto': texto
+                    })
+
+        # Ordem Litúrgica Padrão
+        processar_secao('primeiraLeitura', 'Primeira Leitura')
+        processar_secao('salmo', 'Salmo Responsorial')
+        processar_secao('segundaLeitura', 'Segunda Leitura')
+        processar_secao('evangelho', 'Evangelho')
+        
+        # Ordem para Vigílias e Extras (A chave 'extras' contém lista com 'tipo')
+        # Na V2, 'tipo' define se é "Terceira Leitura", "Epístola", etc.
+        # Se não tiver 'tipo', usamos o 'titulo' (ex: "Benção do fogo")
+        itens_extras = obj_leituras.get('extras', [])
+        for item in itens_extras:
+            tipo = item.get('tipo', item.get('titulo', 'Leitura Extra'))
+            ref = item.get('referencia', '')
+            texto = item.get('texto', '')
+            titulo_texto = item.get('titulo', '')
+            
+            if texto:
                 leituras_formatadas.append({
-                    'tipo': titulo_sistema,
-                    'titulo': titulo_sistema,
-                    'ref': ref_final,
+                    'tipo': tipo,
+                    'titulo': titulo_texto,
+                    'ref': formatar_referencia(ref, tipo),
                     'texto': texto
                 })
 
-        extrair_v2('primeiraLeitura', 'Primeira Leitura')
-        extrair_v2('segundaLeitura', 'Segunda Leitura')
-        extrair_v2('salmo', 'Salmo Responsorial')
-        extrair_v2('evangelho', 'Evangelho')
-
         if not leituras_formatadas:
-            st.warning("⚠️ Dados recebidos, mas nenhuma leitura encontrada.")
             return None
 
         final_data = {
@@ -161,120 +143,68 @@ def fetch_liturgia(date_obj):
             'leituras': leituras_formatadas
         }
         
+        # Salva no cache
         db.salvar_liturgia(date_str_db, final_data)
         return final_data
 
-    except requests.exceptions.HTTPError as err:
-        if err.response.status_code == 404:
-            st.error(f"Liturgia não encontrada para {date_obj.strftime('%d/%m/%Y')}. A API ainda não disponibilizou esta data.")
-        else:
-            st.error(f"Erro HTTP: {err}")
-        return None
     except Exception as e:
-        st.error(f"Erro na requisição: {e}")
+        st.error(f"Erro de conexão: {e}")
         return None
 
-# --- UI HELPER ---
+# --- INTERFACE PRINCIPAL ---
 
-def handle_leitura_selection(data_str, tipo_leitura):
-    try:
-        dados_dia = fetch_liturgia(datetime.strptime(data_str, '%Y-%m-%d'))
-        if not dados_dia: return
+st.title("Bíblia Narrada 🎧")
+
+# Sidebar: Seleção de Data
+st.sidebar.header("Data da Liturgia")
+data_selecionada = st.sidebar.date_input(
+    "Escolha o dia",
+    datetime.date.today()
+)
+
+# Processamento
+if data_selecionada:
+    liturgia = fetch_liturgia(data_selecionada)
+
+    if liturgia:
+        # Cabeçalho do Dia
+        st.markdown(f"### {liturgia['nome_dia']}")
         
-        leitura = next((l for l in dados_dia['leituras'] if l['tipo'] == tipo_leitura), None)
-        if not leitura: st.error("Leitura não encontrada."); return
-
-        prog, _ = get_leitura_status_logic(data_str, tipo_leitura)
+        # Badge de Cor Litúrgica
+        cores_map = {
+            "Verde": "🟢", "Vermelho": "🔴", "Roxo": "🟣", 
+            "Branco": "⚪", "Rosa": "🌸", "Preto": "⚫"
+        }
+        icone_cor = cores_map.get(liturgia['cor'], "⚪")
+        st.caption(f"{icone_cor} Cor Litúrgica: **{liturgia['cor']}** | 📅 {data_selecionada.strftime('%d/%m/%Y')}")
         
-        st.session_state.update({
-            'data_atual_str': data_str,
-            'leitura_atual': {**leitura, 'cor_liturgica': dados_dia['cor']},
-            'progresso_leitura_atual': prog
-        })
-        
-        db.update_status(f"{data_str}-{tipo_leitura}", data_str, tipo_leitura, prog, 1)
-        st.switch_page("pages/1_Roteiro_Viral.py")
-    except Exception as e:
-        st.error(f"Erro ao selecionar: {e}")
+        st.divider()
 
-# --- EXECUÇÃO PRINCIPAL ---
-if __name__ == '__main__':
-    test_api_connection()
+        # Exibição das Leituras
+        for i, item in enumerate(liturgia['leituras']):
+            # Container visual para cada leitura
+            with st.container():
+                st.subheader(item['tipo'])
+                if item['ref']:
+                    st.markdown(f"**{item['ref']}**")
+                
+                # Expander para o texto (padrão expandido ou não, conforme preferência)
+                with st.expander("📖 Ler Texto", expanded=True):
+                    st.write(item['texto'])
+                
+                # --- ÁREA DE ÁUDIO ---
+                # Aqui entra a lógica de gerar o áudio. 
+                # O ID único é importante para o Streamlit não confundir os botões
+                
+                col_audio, col_vazia = st.columns([1, 2])
+                with col_audio:
+                    if st.button(f"🎧 Ouvir {item['tipo']}", key=f"btn_{i}"):
+                        st.info("Gerando áudio... (Implementar conexão com audio_generator)")
+                        # Exemplo de integração:
+                        # audio_path = ag.gerar_audio(item['texto'], f"{liturgia['data']}_{i}")
+                        # st.audio(audio_path)
+                
+                st.divider()
 
-st.title("📖 Biblia Narrada: Painel de Produção")
-
-# --- DASHBOARD ---
-st.header("📋 Em Produção")
-status_raw = db.load_status()
-dash_data = []
-
-if status_raw:
-    for k, v in status_raw.items():
-        if not (v['progresso'].get('publicacao') and not v['em_producao']):
-            dash_data.append({'chave': k, **v})
-
-if dash_data:
-    cols = st.columns(4)
-    for idx, item in enumerate(dash_data):
-        with cols[idx % 4]:
-            with st.container(border=True):
-                st.caption(f"{item['data_liturgia']} | {item['tipo_leitura']}")
-                etapas = sum(item['progresso'].values())
-                st.progress(etapas/7)
-                if st.button("Abrir", key=f"btn_dash_{item['chave']}"):
-                    handle_leitura_selection(item['data_liturgia'], item['tipo_leitura'])
-else:
-    st.info("Nenhuma leitura em andamento.")
-
-st.divider()
-
-# --- HISTÓRICO ---
-cache = db.listar_historico()
-if cache:
-    st.subheader("🗓️ Histórico Local")
-    col_c1, col_c2 = st.columns([3,1])
-    with col_c1:
-        selected_cache = st.selectbox("Itens salvos:", [f"{c['Data']} - {c['Cor Litúrgica']}" for c in cache], key="sel_cache")
-    with col_c2:
-        if st.button("Carregar do Histórico"):
-            data_sel = selected_cache.split(' - ')[0]
-            st.session_state['data_busca'] = data_sel
-            st.rerun()
-
-st.divider()
-
-# --- BUSCA API ---
-st.header("🔍 Buscar Nova Liturgia (API v2)")
-c1, c2 = st.columns([1, 2])
-with c1:
-    dt_input = st.date_input("Data", value=datetime.today())
-with c2:
-    st.write("")
-    st.write("")
-    if st.button("Buscar API Externa", type="primary"):
-        st.session_state['data_busca'] = dt_input.strftime('%Y-%m-%d')
-        if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
-        st.rerun()
-
-# --- RESULTADOS ---
-data_busca = st.session_state.get('data_busca')
-if data_busca:
-    dados = fetch_liturgia(datetime.strptime(data_busca, '%Y-%m-%d'))
-    
-    if dados:
-        cor_map = {"roxo": "🟣", "verde": "🟢", "vermelho": "🔴", "branco": "⚪", "rosa": "🌸"}
-        cor_emoji = cor_map.get(dados['cor'].lower(), "🎨")
-        
-        st.success(f"{cor_emoji} **{dados['nome_dia']}** ({dados['cor']})")
-        
-        if 'leituras' in dados:
-            cols = st.columns(len(dados['leituras']))
-            for i, l in enumerate(dados['leituras']):
-                with cols[i % 4]:
-                    with st.container(border=True):
-                        st.subheader(l['tipo'])
-                        ref_display = l['ref'] if l['ref'] else "Sem referência"
-                        st.markdown(f"**{ref_display}**")
-                        st.markdown("---")
-                        if st.button(f"Produzir", key=f"prod_{l['tipo']}_{data_busca}", use_container_width=True):
-                            handle_leitura_selection(data_busca, l['tipo'])
+    else:
+        st.info("Nenhuma leitura encontrada para exibir. Verifique sua conexão ou se a data é válida.")
