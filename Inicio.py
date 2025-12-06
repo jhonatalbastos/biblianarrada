@@ -4,7 +4,7 @@ import os
 import requests
 import json
 import socket
-import re # Importante para limpar os títulos
+import re 
 from datetime import datetime
 
 # ---------------------------------------------------------------------
@@ -35,29 +35,28 @@ else:
 
 def limpar_referencia(texto, tipo):
     """
-    Remove prefixos litúrgicos para deixar apenas a referência bíblica.
-    Ex: 'Primeira leitura: Isaías 30' -> 'Isaías 30'
-    Ex: 'Evangelho... segundo São Mateus' -> 'São Mateus...'
+    Limpa e formata a referência bíblica conforme solicitado.
     """
     if not texto: return ""
     
-    # Se for Salmo, geralmente queremos manter o formato "Salmo X (Y)"
+    # Se for Salmo, mantém original
     if tipo == "Salmo Responsorial":
         return texto
 
-    # Remove "Primeira leitura:", "Segunda leitura:" (case insensitive)
+    # Remove prefixos litúrgicos comuns
     texto = re.sub(r'^(Primeira|Segunda)\s+leitura\s*[:|-]?\s*', '', texto, flags=re.IGNORECASE)
-    
-    # Remove "Leitura do..."
     texto = re.sub(r'^Leitura\s+d[oa]\s+', '', texto, flags=re.IGNORECASE)
 
-    # Limpeza específica para Evangelho
+    # --- LÓGICA ESPECÍFICA PARA EVANGELHO ---
     if tipo == "Evangelho":
-        # Remove "Proclamação do Evangelho..." ou "Evangelho... segundo"
+        # 1. Remove "Proclamação do Evangelho... segundo"
         texto = re.sub(r'^(Proclamação do\s+)?Evangelho(\s+de Jesus Cristo)?\s+segundo\s+', '', texto, flags=re.IGNORECASE)
-        # Tenta formatar "Mateus 9" para "Mateus, Cap. 9" (Opcional, mas atende seu pedido visual)
-        # Adiciona "Cap." se houver um número logo após o nome do livro
-        # Ex: "São Mateus 9,..." -> "São Mateus, Cap. 9,..."
+        
+        # 2. Remove "São", "Santo", "Santa" (NOVO AJUSTE)
+        texto = re.sub(r'\b(São|Santo|Santa)\s+', '', texto, flags=re.IGNORECASE)
+
+        # 3. Formata "Mateus 3" para "Mateus, Cap. 3"
+        # Procura uma letra seguida de espaço e número
         texto = re.sub(r'([A-Za-z])\s+(\d+)', r'\1, Cap. \2', texto)
 
     return texto.strip()
@@ -116,17 +115,16 @@ def fetch_liturgia(date_obj):
             nome_dia = today.get('entry_title', 'Dia Litúrgico').replace('<br/>', ' - ')
             readings = today.get('readings', {})
             
-            # Helper para processar cada item
             def processar_item(tipo_sistema, item_api, ref_key='title'):
                 if not item_api: return
                 
-                # Pega a referência bruta (Ex: "Primeira leitura: Isaías...")
+                # Pega a referência bruta ou título
                 ref_bruta = item_api.get(ref_key, '') or item_api.get('head_title', '')
                 
-                # Limpa a referência para o formato desejado
+                # Limpa a referência
                 ref_limpa = limpar_referencia(ref_bruta, tipo_sistema)
                 
-                # Tratamento especial para Salmo (texto)
+                # Tratamento do texto (Salmo vs outros)
                 texto_final = item_api.get('text', '')
                 if tipo_sistema == 'Salmo Responsorial':
                     refrao = item_api.get('response', '')
@@ -139,8 +137,8 @@ def fetch_liturgia(date_obj):
 
                 leituras_formatadas.append({
                     'tipo': tipo_sistema,
-                    'titulo': tipo_sistema, # Título fixo (Header do Card)
-                    'ref': ref_limpa,       # Referência limpa (Subheader)
+                    'titulo': tipo_sistema, 
+                    'ref': ref_limpa,
                     'texto': texto_final
                 })
 
@@ -150,7 +148,7 @@ def fetch_liturgia(date_obj):
             processar_item('Evangelho', readings.get('gospel'))
 
         else:
-            # Fallback para formato antigo/plano
+            # Fallback (Formato antigo)
             cor_liturgica = data.get('cor') or data.get('liturgia', {}).get('cor', 'Verde')
             nome_dia = data.get('dia', 'Dia Litúrgico')
             
@@ -295,16 +293,11 @@ if data_busca:
         st.success(f"{cor_emoji} **{dados['nome_dia']}** ({dados['cor']})")
         
         if 'leituras' in dados:
-            # Layout em Colunas
             cols = st.columns(len(dados['leituras']))
             for i, l in enumerate(dados['leituras']):
                 with cols[i % 4]:
                     with st.container(border=True):
-                        # Cabeçalho Principal (Tipo)
                         st.subheader(l['tipo'])
-                        
-                        # Referência Limpa (Ex: Isaías 30, ...)
-                        # Se não tiver ref, exibe um traço
                         ref_display = l['ref'] if l['ref'] else ""
                         if ref_display:
                             st.markdown(f"**{ref_display}**")
