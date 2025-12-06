@@ -4,7 +4,7 @@ import os
 import requests
 import json
 import socket
-import re 
+import re
 from datetime import datetime
 
 # ---------------------------------------------------------------------
@@ -31,45 +31,50 @@ else:
     st.error("Erro no módulo database.")
     st.stop()
 
+# --- MAPA DE ABREVIAÇÕES (OPCIONAL, PARA EMBELEZAR) ---
+LIVROS_EXTENSO = {
+    "Mt": "Mateus", "Mc": "Marcos", "Lc": "Lucas", "Jo": "João",
+    "Gn": "Gênesis", "Ex": "Êxodo", "Lv": "Levítico", "Nm": "Números", "Dt": "Deuteronômio",
+    "Is": "Isaías", "Jr": "Jeremias", "Ez": "Ezequiel", "Dn": "Daniel",
+    "Sl": "Salmo", "At": "Atos dos Apóstolos", "Rm": "Romanos", "1Cor": "1ª Coríntios",
+    "2Cor": "2ª Coríntios", "Gl": "Gálatas", "Ef": "Efésios", "Fp": "Filipenses",
+    "Cl": "Colossenses", "1Ts": "1ª Tessalonicenses", "2Ts": "2ª Tessalonicenses",
+    "1Tm": "1ª Timóteo", "2Tm": "2ª Timóteo", "Tt": "Tito", "Fm": "Filemom",
+    "Hb": "Hebreus", "Tg": "Tiago", "1Pd": "1ª Pedro", "2Pd": "2ª Pedro",
+    "1Jo": "1ª João", "2Jo": "2ª João", "3Jo": "3ª João", "Jd": "Judas", "Ap": "Apocalipse"
+}
+
 # --- FUNÇÕES AUXILIARES ---
 
-def limpar_referencia(texto, tipo):
+def formatar_referencia(ref_bruta, tipo):
     """
-    Limpa e formata a referência bíblica com precisão.
+    Formata referências da API v2 (ex: 'Mt 9,35-10,1') para o estilo desejado.
     """
-    if not texto: return ""
+    if not ref_bruta: return ""
     
-    # Salmo mantém original
+    # Salmo geralmente já vem ok ou precisa de pouco ajuste
     if tipo == "Salmo Responsorial":
-        return texto
+        return ref_bruta
 
-    # 1. Limpeza de prefixos litúrgicos
-    # Remove "Primeira/Segunda leitura:"
-    texto = re.sub(r'^(Primeira|Segunda)\s+leitura\s*[:|-]?\s*', '', texto, flags=re.IGNORECASE)
-    # Remove "Leitura do..."
-    texto = re.sub(r'^Leitura\s+d[oa]\s+', '', texto, flags=re.IGNORECASE)
+    # Tenta expandir abreviações (Ex: "Mt" -> "Mateus")
+    partes = ref_bruta.split(" ", 1)
+    if len(partes) == 2:
+        livro_abrev, resto = partes
+        livro_nome = LIVROS_EXTENSO.get(livro_abrev, livro_abrev) # Se não achar, usa original
+        texto_ref = f"{livro_nome} {resto}"
+    else:
+        texto_ref = ref_bruta
 
-    # --- LÓGICA DO EVANGELHO ---
+    # Formatação especial para Evangelho: "Mateus, Cap. 9..."
     if tipo == "Evangelho":
-        # Remove "Proclamação do Evangelho... segundo..."
-        texto = re.sub(r'^(Proclamação do\s+)?Evangelho(\s+de Jesus Cristo)?\s+segundo\s+', '', texto, flags=re.IGNORECASE)
+        # Remove "São", "Santo" se por acaso vierem (na v2 é raro, mas garante)
+        texto_ref = re.sub(r'\b(São|Santo|Santa)\s+', '', texto_ref, flags=re.IGNORECASE)
         
-        # Remove "São", "Santo", "Santa" (isolados)
-        texto = re.sub(r'\b(São|Santo|Santa)\b\s*', '', texto, flags=re.IGNORECASE)
+        # Insere ", Cap."
+        # Regex: Pega (Nome do Livro) + Espaço + (Número)
+        texto_ref = re.sub(r'([A-Za-zÀ-ÿ]+)\s+(\d+)', r'\1, Cap. \2', texto_ref)
 
-        # Remove dois pontos soltos que possam ter sobrado antes do número (Ex: "Lucas: 3" -> "Lucas 3")
-        texto = re.sub(r':\s*(?=\d)', ' ', texto)
-        
-        # Remove dois pontos no final da string se não houver número depois (Ex: "Lucas:")
-        texto = re.sub(r':\s*$', '', texto)
-
-        # --- FORMATAÇÃO "Cap." ---
-        # Procura por: (Letra) + (Espaço ou Pontuação opcional) + (Número)
-        # Substitui por: Letra + ", Cap. " + Número
-        # count=1 garante que só faça isso no primeiro número (o capítulo)
-        texto = re.sub(r'([A-Za-z])\s*:?\s+(\d+)', r'\1, Cap. \2', texto, count=1)
-
-    return texto.strip()
+    return texto_ref
 
 def get_leitura_status_logic(data_str, tipo_leitura):
     chave = f"{data_str}-{tipo_leitura}"
@@ -81,143 +86,88 @@ def get_leitura_status_logic(data_str, tipo_leitura):
     return default, 0
 
 def test_api_connection():
-    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
+    # URL padrão da API v2 (Dancrf)
+    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://liturgia.up.railway.app")
     try:
         from urllib.parse import urlparse
-        hostname = urlparse(BASE_URL).netloc or "api-liturgia-diaria.vercel.app"
-    except:
-        hostname = "api-liturgia-diaria.vercel.app"
-    try:
+        hostname = urlparse(BASE_URL).netloc or "liturgia.up.railway.app"
         socket.getaddrinfo(hostname, 443)
         return True
     except:
         return False
 
-# --- INTEGRAÇÃO COM A API ---
+# --- INTEGRAÇÃO COM A API V2 ---
 
 def fetch_liturgia(date_obj):
-    date_str = date_obj.strftime('%Y-%m-%d')
+    # API v2 usa formato DD-MM-YYYY na URL
+    date_str_db = date_obj.strftime('%Y-%m-%d')     # Para salvar no banco (padrão ISO)
+    date_str_api = date_obj.strftime('%d-%m-%Y')    # Para chamar a API
     
     # 1. Cache Local
-    cached = db.carregar_liturgia(date_str)
+    cached = db.carregar_liturgia(date_str_db)
     if cached:
-        st.toast(f"Carregado do banco local: {date_str}", icon="💾")
+        st.toast(f"Carregado do banco local: {date_str_db}", icon="💾")
         return cached
     
     # 2. API Request
-    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api-liturgia-diaria.vercel.app")
+    BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://liturgia.up.railway.app")
     if BASE_URL.endswith('/'): BASE_URL = BASE_URL[:-1]
+    
+    # Endpoint da v2: /v2/dia/DD-MM-YYYY
+    API_URL = f"{BASE_URL}/v2/dia/{date_str_api}"
 
     try:
-        response = requests.get(BASE_URL, params={'date': date_str}, timeout=15)
+        response = requests.get(API_URL, timeout=15)
         response.raise_for_status()
         data = response.json()
         
         leituras_formatadas = []
-        cor_liturgica = "Verde"
-        nome_dia = "Dia Litúrgico"
+        
+        # Na v2, a cor e o dia costumam estar na raiz ou chaves específicas
+        cor_liturgica = data.get('cor', 'Verde')
+        nome_dia = data.get('dia', 'Dia Litúrgico')
 
-        if 'today' in data:
-            today = data['today']
-            cor_liturgica = today.get('color', 'Verde')
-            nome_dia = today.get('entry_title', 'Dia Litúrgico').replace('<br/>', ' - ')
-            readings = today.get('readings', {})
-            
-            # --- PROCESSADOR INTELIGENTE DE CAMPOS ---
-            def processar_item(tipo_sistema, item_api, chaves_possiveis_ref):
-                if not item_api: return
+        # Função helper para extrair da estrutura v2
+        def extrair_v2(chave_json, titulo_sistema):
+            if chave_json in data:
+                item = data[chave_json]
+                # v2 retorna 'referencia' e 'texto' claramente
+                ref_bruta = item.get('referencia', '')
+                texto = item.get('texto', '')
                 
-                # Tenta encontrar a referência em ordem de prioridade
-                ref_bruta = ""
-                for chave in chaves_possiveis_ref:
-                    val = item_api.get(chave)
-                    # Verifica se o valor existe e se parece ter números (para evitar títulos vazios como "São Lucas:")
-                    if val and isinstance(val, str):
-                        ref_bruta = val
-                        # Se for Evangelho, damos preferência para strings que tenham dígitos
-                        if tipo_sistema == 'Evangelho' and any(char.isdigit() for char in val):
-                            break
-                        # Para outros, a primeira encontrada serve
-                        if tipo_sistema != 'Evangelho':
-                            break
+                # Se for Salmo, o refrão vem separado
+                if chave_json == 'salmo':
+                    refrao = item.get('refrao', '')
+                    if refrao:
+                        texto = f"Refrão: {refrao}\n\n{texto}"
                 
-                # Se não achou nada, tenta 'title' como fallback
-                if not ref_bruta:
-                    ref_bruta = item_api.get('title', '')
-
-                # Limpeza e Formatação
-                ref_limpa = limpar_referencia(ref_bruta, tipo_sistema)
+                ref_final = formatar_referencia(ref_bruta, titulo_sistema)
                 
-                # Extração do Texto
-                texto_final = item_api.get('text', '')
-                if tipo_sistema == 'Salmo Responsorial':
-                    refrao = item_api.get('response', '')
-                    conteudo = item_api.get('content_psalm', [])
-                    if isinstance(conteudo, list):
-                        corpo_salmo = "\n".join([str(v) for v in conteudo])
-                    else:
-                        corpo_salmo = str(conteudo)
-                    texto_final = f"Refrão: {refrao}\n\n{corpo_salmo}"
-
                 leituras_formatadas.append({
-                    'tipo': tipo_sistema,
-                    'titulo': tipo_sistema, 
-                    'ref': ref_limpa,
-                    'texto': texto_final
+                    'tipo': titulo_sistema,
+                    'titulo': titulo_sistema,
+                    'ref': ref_final,
+                    'texto': texto
                 })
 
-            # Mapeamento de prioridade: Para Evangelho, 'head_title' costuma ter os números
-            processar_item('Primeira Leitura', readings.get('first_reading'), ['title', 'head_title'])
-            processar_item('Segunda Leitura', readings.get('second_reading'), ['title', 'head_title'])
-            processar_item('Salmo Responsorial', readings.get('psalm'), ['title'])
-            # AQUI ESTAVA O PROBLEMA: Priorizamos head_title para o Evangelho
-            processar_item('Evangelho', readings.get('gospel'), ['head_title', 'title'])
-
-        else:
-            # Fallback (Formato antigo)
-            cor_liturgica = data.get('cor') or data.get('liturgia', {}).get('cor', 'Verde')
-            nome_dia = data.get('dia', 'Dia Litúrgico')
-            
-            mapeamento = {
-                'primeiraLeitura': 'Primeira Leitura',
-                'segundaLeitura': 'Segunda Leitura',
-                'salmo': 'Salmo Responsorial',
-                'evangelho': 'Evangelho'
-            }
-            
-            for chave, tipo_sis in mapeamento.items():
-                if chave in data:
-                    conteudo = data[chave]
-                    ref_bruta = ""
-                    texto = ""
-                    if isinstance(conteudo, dict):
-                        texto = conteudo.get('texto', '') or conteudo.get('refrao', '')
-                        ref_bruta = conteudo.get('referencia', '') or conteudo.get('ref', '')
-                    elif isinstance(conteudo, str):
-                        texto = conteudo
-                        ref_bruta = data.get(f"{chave}Ref", "")
-
-                    if texto:
-                        ref_limpa = limpar_referencia(ref_bruta, tipo_sis)
-                        leituras_formatadas.append({
-                            'tipo': tipo_sis,
-                            'titulo': tipo_sis,
-                            'ref': ref_limpa,
-                            'texto': texto
-                        })
+        # Mapeamento dos campos da v2
+        extrair_v2('primeiraLeitura', 'Primeira Leitura')
+        extrair_v2('segundaLeitura', 'Segunda Leitura') # Nem sempre tem
+        extrair_v2('salmo', 'Salmo Responsorial')
+        extrair_v2('evangelho', 'Evangelho')
 
         if not leituras_formatadas:
-            st.warning("⚠️ JSON recebido, mas o formato não foi reconhecido.")
+            st.warning("⚠️ Dados recebidos, mas nenhuma leitura encontrada.")
             return None
 
         final_data = {
-            'data': date_str,
+            'data': date_str_db, # Salva com ISO YYYY-MM-DD no banco para ordenação
             'nome_dia': nome_dia,
             'cor': cor_liturgica,
             'leituras': leituras_formatadas
         }
         
-        db.salvar_liturgia(date_str, final_data)
+        db.salvar_liturgia(date_str_db, final_data)
         return final_data
 
     except Exception as e:
@@ -294,7 +244,7 @@ if cache:
 st.divider()
 
 # --- BUSCA API ---
-st.header("🔍 Buscar Nova Liturgia")
+st.header("🔍 Buscar Nova Liturgia (API v2)")
 c1, c2 = st.columns([1, 2])
 with c1:
     dt_input = st.date_input("Data", value=datetime.today())
@@ -303,6 +253,7 @@ with c2:
     st.write("")
     if st.button("Buscar API Externa", type="primary"):
         st.session_state['data_busca'] = dt_input.strftime('%Y-%m-%d')
+        # Limpa cache da sessão se mudar a data
         if 'dados_liturgia' in st.session_state: del st.session_state['dados_liturgia']
         st.rerun()
 
@@ -323,7 +274,9 @@ if data_busca:
                 with cols[i % 4]:
                     with st.container(border=True):
                         st.subheader(l['tipo'])
-                        ref_display = l['ref'] if l['ref'] else "Referência não detectada"
+                        
+                        # Exibe referência formatada
+                        ref_display = l['ref'] if l['ref'] else "Sem referência"
                         st.markdown(f"**{ref_display}**")
                         
                         st.markdown("---")
