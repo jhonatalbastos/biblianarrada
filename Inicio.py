@@ -1,31 +1,41 @@
+import streamlit as st
 import sys
 import os
-
-# ---------------------------------------------------------------------
-# CORREÇÃO DE IMPORTAÇÃO (CRÍTICO PARA STREAMLIT CLOUD)
-# Adiciona o diretório onde este arquivo está ao caminho de busca do Python.
-# Isso garante que a pasta 'modules' seja encontrada corretamente.
-# ---------------------------------------------------------------------
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import streamlit as st
 import requests
 import json
 import socket
 from datetime import datetime
 
-# Tenta importar o módulo de banco de dados
-try:
-    from modules import database as db
-except ImportError as e:
-    st.error(f"🚨 Erro de Importação: O Python não encontrou o arquivo 'modules/database.py'. Detalhe: {e}")
-    st.stop()
+# ---------------------------------------------------------------------
+# CONFIGURAÇÃO DE IMPORTAÇÃO (CRÍTICO)
+# ---------------------------------------------------------------------
+# Garante que a raiz do projeto esteja no caminho de busca do Python
+root_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(root_path)
 
-# --- CONFIGURAÇÃO INICIAL ---
+# Tenta importar o módulo de banco de dados diretamente
+try:
+    # A forma mais segura dada a sua estrutura (modules/database.py)
+    import modules.database as db
+except ImportError as e:
+    # Fallback: Tenta importar caso o Python não reconheça "modules" como pacote
+    try:
+        from modules import database as db
+    except ImportError as e2:
+        st.error(f"🚨 Erro Crítico: Não foi possível importar 'modules/database.py'.")
+        st.code(f"Erro 1: {e}\nErro 2: {e2}")
+        st.info("Verifique se o arquivo 'database.py' está dentro da pasta 'modules' e se o nome está todo em minúsculas.")
+        st.stop()
+
+# --- CONFIGURAÇÃO INICIAL DA PÁGINA ---
 st.set_page_config(page_title="Início – Biblia Narrada", layout="wide")
 
 # Inicializa o banco (cria pasta 'data' e arquivo .db se não existirem)
-db.init_db()
+if hasattr(db, 'init_db'):
+    db.init_db()
+else:
+    st.error("O módulo 'database' foi carregado, mas a função 'init_db' não foi encontrada. Verifique o código em 'modules/database.py'.")
+    st.stop()
 
 # --- FUNÇÕES AUXILIARES (LÓGICA DE NEGÓCIO) ---
 
@@ -33,7 +43,10 @@ def get_leitura_status_logic(data_str, tipo_leitura):
     """Retorna o status atual de uma leitura, mesclando com o padrão se necessário."""
     chave = f"{data_str}-{tipo_leitura}"
     default = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
+    
+    # Usa a função do módulo importado
     prog, em_prod = db.load_status(chave)
+    
     if prog:
         default.update(prog)
         return default, em_prod
@@ -106,16 +119,22 @@ def fetch_liturgia(date_obj):
         response.raise_for_status()
         data = response.json()
         
-        # Parser Robusto (Adaptação para formato Josué Santos/Vercel)
+        # --- PARSER ROBUSTO (ATUALIZADO) ---
         leituras_formatadas = []
+        
+        # Tenta identificar a cor litúrgica em vários lugares possíveis
         cor = data.get('cor', 'Verde') 
-        if not cor and 'liturgia' in data: cor = data['liturgia'].get('cor', 'Verde')
+        if not cor and 'liturgia' in data: 
+            cor = data['liturgia'].get('cor', 'Verde')
 
+        # Mapeamento estendido de chaves possíveis
         mapeamento = {
             'primeiraLeitura': 'Primeira Leitura',
             'segundaLeitura': 'Segunda Leitura',
             'salmo': 'Salmo Responsorial',
-            'evangelho': 'Evangelho'
+            'evangelho': 'Evangelho',
+            'leitura1': 'Primeira Leitura', # Caso a API mude
+            'leitura2': 'Segunda Leitura'   # Caso a API mude
         }
         
         for chave_api, titulo in mapeamento.items():
@@ -124,17 +143,24 @@ def fetch_liturgia(date_obj):
                 texto, ref = "", ""
                 
                 if isinstance(conteudo, dict):
+                    # Tenta pegar texto, refrao, ou 'texto' dentro de um sub-objeto
                     texto = conteudo.get('texto', '') or conteudo.get('refrao', '')
                     ref = conteudo.get('referencia', '') or conteudo.get('ref', '')
                 elif isinstance(conteudo, str):
                     texto = conteudo
-                    ref = data.get(f"{chave_api}Ref", "")
+                    # Tenta achar a referência em uma chave separada (ex: primeiraLeituraRef)
+                    ref = data.get(f"{chave_api}Ref", "") or data.get(f"{chave_api}Referencia", "")
                 
+                # Só adiciona se tiver algum texto
                 if texto:
                     leituras_formatadas.append({'tipo': titulo, 'titulo': titulo, 'ref': ref, 'texto': texto})
 
+        # --- DIAGNÓSTICO DE FALHA NO PARSER ---
         if not leituras_formatadas:
-            st.warning("JSON recebido mas sem leituras reconhecíveis.")
+            st.warning("⚠️ JSON recebido, mas o formato não foi reconhecido pelo sistema.")
+            with st.expander("🕵️ Ver JSON Recebido (Para Debug)", expanded=False):
+                st.write("A API retornou os dados abaixo, mas não achei as chaves 'primeiraLeitura', etc.")
+                st.json(data)
             return None
 
         final_data = {
@@ -149,7 +175,7 @@ def fetch_liturgia(date_obj):
         return final_data
 
     except Exception as e:
-        st.error(f"Erro na requisição: {e}")
+        st.error(f"Erro na requisição ou processamento: {e}")
         return None
 
 # --- UI HELPER ---
