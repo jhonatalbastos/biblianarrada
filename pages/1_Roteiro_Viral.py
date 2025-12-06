@@ -1,11 +1,9 @@
 import streamlit as st
 import sqlite3
 import json
-from datetime import datetime
-import requests # Mantido caso o carregar_do_banco precise de fallback
+import os # Necessário para simular o caminho do arquivo
 
-# --- CONFIGURAÇÃO E UTILS DE PERSISTÊNCIA (Localizados para acesso rápido) ---
-# NOTE: Em um projeto grande, estas funções estariam em 'utils/db_utils.py' e seriam importadas.
+# --- CONFIGURAÇÃO E UTILS DE PERSISTÊNCIA (Recuperados do arquivo 1) ---
 DB_FILE = 'biblia_narrada_db.sqlite'
 
 def get_db_connection():
@@ -36,7 +34,7 @@ def load_producao_status(chave=None):
             return json.loads(res[0]), res[1]
         return None, 0
     else:
-        # Carrega todas as leituras que estão ativas OU que têm algum progresso (Dashboard logic)
+        # Carrega todas as leituras que estão ativas OU que têm algum progresso
         default_progresso_json = json.dumps({"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False})
         c.execute(f'''SELECT chave_leitura, data_liturgia, tipo_leitura, progresso, em_producao 
                      FROM producao_status 
@@ -76,7 +74,7 @@ def carregar_do_banco(data_str):
         return json.loads(res[0])
     return None
 
-# --- FUNÇÃO DE NAVEGAÇÃO EXPANDIDA (Atualizada e Responsiva) ---
+# --- FUNÇÃO DE NAVEGAÇÃO EXPANDIDA (Recuperada e Otimizada) ---
 def render_navigation_bar(current_page_title):
     
     # 1. Carrega todas as produções ativas
@@ -217,8 +215,6 @@ def render_navigation_bar(current_page_title):
         with col_nav:
             st.markdown('<div class="nav-button-container">', unsafe_allow_html=True)
             
-            # Em vez de st.columns(len(stages)), renderizamos em uma única linha responsiva
-            
             current_page = st.session_state['current_page_name']
             
             for (label, key, page, icon, base_enabled) in stages:
@@ -245,16 +241,53 @@ def render_navigation_bar(current_page_title):
 # --- Fim Função de Navegação ---
 
 
-# --- LÓGICA PRINCIPAL DA PÁGINA 1 ---
+# --- FUNÇÕES AUXILIARES PARA IMAGEM ---
 
-st.set_page_config(page_title="1 – Roteiro Viral", layout="wide")
+# Simulação de geração/upload de imagem
+def generate_image(prompt):
+    """Simula a chamada a um serviço de geração de imagem (DALL-E, Midjourney, etc.)"""
+    st.info(f"🎨 Gerando imagem com o prompt: **'{prompt}'**")
+    # Retorna um caminho de imagem simulado
+    return "imagens_cache/imagem_gerada_simulada.png" 
+
+def save_image_info(chave_progresso, image_path, prompt):
+    """Salva o caminho da imagem e o prompt no banco de dados (Simulação)"""
+    if 'artefatos' not in st.session_state:
+        st.session_state.artefatos = {}
+        
+    st.session_state.artefatos['imagem_path'] = image_path
+    st.session_state.artefatos['imagem_prompt_usado'] = prompt
+    st.session_state['progresso_leitura_atual']['imagens'] = True
+    
+    # Salva o progresso no banco de dados
+    leitura = st.session_state['leitura_atual']
+    data_str = st.session_state['data_atual_str']
+    progresso = st.session_state['progresso_leitura_atual']
+    
+    update_producao_status(
+        chave_progresso, 
+        data_str, 
+        leitura['tipo'], 
+        progresso, 
+        1 
+    )
+
+
+# --- LÓGICA PRINCIPAL DA PÁGINA 2 ---
+
+st.set_page_config(page_title="2 – Imagens", layout="wide")
 
 # 0. Configuração de estado da página e chamada de navegação
-st.session_state['current_page_name'] = "pages/1_Roteiro_Viral.py" 
-render_navigation_bar("📝 1 – Gerador de Roteiro e Prompts (Groq)")
+st.session_state['current_page_name'] = "pages/2_Imagens.py" 
+render_navigation_bar("🎨 2 – Geração de Imagens e Assets")
 
 if 'leitura_atual' not in st.session_state:
-    st.error("Nenhuma leitura selecionada. Por favor, volte ao Dashboard e selecione uma leitura 'Em Produção'.")
+    st.error("Nenhuma leitura selecionada. Por favor, volte ao Dashboard.")
+    st.stop()
+    
+if 'artefatos' not in st.session_state or 'roteiro_final' not in st.session_state.artefatos:
+    st.warning("⚠️ Roteiro não finalizado. Por favor, complete a Etapa 1 primeiro.")
+    if st.button("⬅️ Ir para 1. Roteiro"): st.switch_page("pages/1_Roteiro_Viral.py")
     st.stop()
 
 leitura = st.session_state['leitura_atual']
@@ -262,88 +295,75 @@ data_str = st.session_state['data_atual_str']
 progresso = st.session_state['progresso_leitura_atual']
 chave_progresso = f"{data_str}-{leitura['tipo']}"
 
-# Conteúdo da Leitura
-st.subheader(f"Leitura Original ({leitura.get('cor_liturgica', 'N/A')})")
-st.code(leitura.get('texto', 'Texto não encontrado.'), language="text")
+# Carrega artefatos do Roteiro
+roteiro_final = st.session_state.artefatos.get('roteiro_final', 'Roteiro não encontrado.')
+prompt_base = st.session_state.artefatos.get('prompt_imagem', 'Prompt não definido na Etapa 1.')
 
-st.markdown("---")
+# 1. Visualização do Roteiro e Prompt Base
+st.subheader("📝 Roteiro Final")
+with st.expander("Visualizar o Roteiro Final", expanded=False):
+    st.markdown(roteiro_final)
 
-# 1. Geração de Roteiro
-st.subheader("✍️ Roteiro Longo Gerado")
-st.info("O roteiro gerado aqui será o texto final que será narrado pelo TTS.")
-
-if 'roteiro_texto' not in st.session_state:
-    st.session_state.roteiro_texto = leitura.get('texto', '')
-
-roteiro_final = st.text_area(
-    "Edite e Finalize o Roteiro:",
-    value=st.session_state.roteiro_texto,
-    height=400,
-    key='final_roteiro_area'
+st.subheader("🖼️ Prompt Base da Imagem")
+st.warning("Edite o prompt antes de gerar, se necessário. O estilo cinematográfico é crucial!")
+prompt_editado = st.text_area(
+    "Prompt de Geração (Melhore o Estilo!):",
+    value=prompt_base,
+    height=100,
+    key='prompt_edicao_area'
 )
-st.session_state.roteiro_texto = roteiro_final
 
+# 2. Geração/Upload e Pré-visualização da Imagem
 st.markdown("---")
+col_generate, col_upload = st.columns(2)
 
-# 2. Geração de Prompts de Imagem
-st.subheader("🎨 Prompts de Imagem (Para a Próxima Etapa)")
-st.info("Descreva aqui as cenas que devem ser geradas por IA para acompanhar o áudio.")
+image_path = st.session_state.artefatos.get('imagem_path', None)
 
-if 'prompt_imagem' not in st.session_state:
-    st.session_state.prompt_imagem = f"Arte cinematográfica e espiritual da passagem bíblica {leitura.get('ref', 'N/A')}"
-
-prompt_imagem = st.text_area(
-    "Prompt de Imagem Principal (Inglês recomendado):",
-    value=st.session_state.prompt_imagem,
-    height=150,
-    key='final_prompt_area'
-)
-st.session_state.prompt_imagem = prompt_imagem
-
-st.markdown("---")
-
-# 3. Botões de Ação (Responsivos - Máximo 2 colunas para mobile)
-st.subheader("Ações")
-
-col_b1, col_b2 = st.columns(2)
-
-with col_b1:
-    # Botão para geração (simulação Groq)
-    if st.button("🤖 Gerar Roteiro c/ IA (Groq)", type="secondary", use_container_width=True, help="Usa a IA para criar um roteiro mais dinâmico a partir do texto original."):
-        # Lógica de chamada da Groq (simulação)
-        st.session_state.roteiro_texto = f"**ROTEIRO GERADO PELA IA PARA:** {leitura['ref']}\n\n(Este é um roteiro dinâmico, adaptado para ser mais envolvente...)\n\n" + leitura['texto']
-        st.success("Roteiro gerado e carregado na caixa de texto!")
-        st.rerun()
-
-with col_b2:
-    # Botão principal de salvamento
-    if st.button("💾 Salvar Roteiro e Progresso", type="primary", use_container_width=True):
-        if not st.session_state.roteiro_texto or not st.session_state.prompt_imagem:
-            st.error("Roteiro ou Prompt não podem estar vazios.")
+with col_generate:
+    if st.button("✨ Gerar Imagem com IA", type="primary", use_container_width=True):
+        if not prompt_editado:
+            st.error("O prompt não pode estar vazio para a geração.")
         else:
-            # 1. Atualiza o estado da sessão com os dados atuais
-            if 'artefatos' not in st.session_state:
-                st.session_state.artefatos = {}
-            st.session_state.artefatos['roteiro_final'] = st.session_state.roteiro_texto
-            st.session_state.artefatos['prompt_imagem'] = st.session_state.prompt_imagem
-            
-            # 2. Atualiza o progresso no banco de dados
-            progresso['roteiro'] = True
-            update_producao_status(
-                chave_progresso, 
-                data_str, 
-                leitura['tipo'], 
-                progresso, 
-                1 
-            )
-            st.success("✅ Roteiro e prompts salvos com sucesso!")
-            st.session_state['leituras_em_producao'] = load_producao_status()
+            path_simulado = generate_image(prompt_editado)
+            save_image_info(chave_progresso, path_simulado, prompt_editado)
             st.rerun()
 
+with col_upload:
+    uploaded_file = st.file_uploader("📥 Ou faça Upload de uma Imagem Pronta (.png/.jpg)", type=["png", "jpg", "jpeg"])
+    
+    if uploaded_file is not None:
+        # Simula o salvamento do upload
+        image_path_uploaded = f"imagens_cache/upload_{chave_progresso}_{uploaded_file.name}"
+        # Simula a escrita do arquivo (em um ambiente real, você salvaria isso em um bucket S3 ou disco persistente)
+        with open(image_path_uploaded, "wb") as f:
+            f.write(uploaded_file.getbuffer()) 
+            
+        save_image_info(chave_progresso, image_path_uploaded, "Upload Manual")
+        st.success("Imagem enviada e salva!")
+        st.rerun()
 
 st.markdown("---")
 
-# Botão para ir à próxima etapa (aparece apenas se o roteiro foi concluído)
-if progresso.get('roteiro', False):
-    if st.button("🎨 Ir para 2. Imagens", use_container_width=True):
-        st.switch_page("pages/2_Imagens.py")
+# 3. Exibição do Resultado
+if image_path:
+    st.subheader("✅ Imagem Final Selecionada")
+    st.caption(f"Caminho Simulado: `{image_path}`")
+    
+    # Exibe a imagem (simulando que 'image_path' existe localmente ou é um URL)
+    # NOTE: Em um ambiente real, você precisaria garantir que o Streamlit consiga acessar este caminho.
+    # Aqui, usaremos uma imagem placeholder, pois o caminho simulado não existe no ambiente do Streamlit Cloud/Deploy.
+    
+    st.image("", 
+             caption=f"Prompt utilizado: {st.session_state.artefatos.get('imagem_prompt_usado', 'N/A')}",
+             use_column_width=True)
+    
+    st.success("Progresso Salvo! Imagem pronta para uso.")
+    
+    if st.button("🔊 Ir para 3. Áudio TTS", type="primary", use_container_width=True):
+        st.switch_page("pages/3_Audio_TTS.py")
+else:
+    st.info("Aguardando a geração ou upload da imagem de fundo para a produção do vídeo.")
+    st.session_state['progresso_leitura_atual']['imagens'] = False # Garante que está como Falso se não houver path
+    # Chama o update status para garantir que o progresso seja atualizado em caso de re-acesso
+    update_producao_status(chave_progresso, data_str, leitura['tipo'], progresso, 1)
+
