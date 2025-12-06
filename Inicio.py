@@ -57,10 +57,12 @@ def listar_cache_liturgia():
     
     lista_cache = []
     for data, cor, acesso in rows:
+        # Formata a data de acesso para ser mais legível
+        data_acesso = datetime.strptime(acesso.split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%d/%m/%Y %H:%M')
         lista_cache.append({
             'Data': data,
             'Cor Litúrgica': cor,
-            'Último Acesso': acesso
+            'Último Acesso': data_acesso
         })
     return lista_cache
 
@@ -94,9 +96,10 @@ def load_producao_status(chave=None):
     else:
         # Carrega todas as leituras que estão ativas OU que têm algum progresso
         default_progresso_json = json.dumps({"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False})
+        # Usando '!= ?' para garantir a robustez na comparação de strings no SQLite
         c.execute(f'''SELECT chave_leitura, data_liturgia, tipo_leitura, progresso, em_producao 
                      FROM producao_status 
-                     WHERE em_producao = 1 OR progresso != '{default_progresso_json}' ''')
+                     WHERE em_producao = 1 OR progresso != ? ''', (default_progresso_json,))
         rows = c.fetchall()
         conn.close()
         all_status = {}
@@ -134,11 +137,12 @@ def get_leitura_status(data_str, tipo_leitura):
     return default_progresso, 0
 
 
-# --- INTEGRAÇÃO COM API EXTERNA ---
+# --- INTEGRAÇÃO COM API EXTERNA (REFINADA) ---
 
 def fetch_liturgia(date_obj):
     """
     Busca a liturgia do dia na API externa (usando o endpoint Vercel/Proxy) ou no cache local.
+    A API padrão é https://api.liturgiadiaria.net/api/v1/liturgia
     """
     date_str = date_obj.strftime('%Y-%m-%d')
     
@@ -149,15 +153,16 @@ def fetch_liturgia(date_obj):
         return cached_data
     
     # 2. Define o endpoint da API
-    # Prioriza o segredo (API Vercel/Proxy) ou usa uma API pública alternativa
+    # Prioriza o segredo (se for um proxy Vercel customizado) ou usa a API pública principal
     BASE_URL = st.secrets.get("LITURGIA_API_BASE_URL", "https://api.liturgiadiaria.net/api/v1/liturgia")
     
     API_URL = f"{BASE_URL}/{date_str}"
     
-    st.info(f"Buscando dados da liturgia para {date_str} em: {BASE_URL}...")
+    # st.info(f"Buscando dados da liturgia para {date_str} em: {BASE_URL}...")
     
     try:
-        response = requests.get(API_URL, timeout=10)
+        # Aumentando o timeout para dar mais robustez
+        response = requests.get(API_URL, timeout=15) 
         response.raise_for_status() # Lança exceção para erros HTTP (4xx ou 5xx)
         data = response.json()
         
@@ -165,19 +170,25 @@ def fetch_liturgia(date_obj):
         if data and 'leituras' in data:
             
             leituras_formatadas = []
-            for leitura in data['leituras']:
+            # Mapeamento para normalizar os tipos de leitura
+            tipo_mapeamento = {
+                "Primeira Leitura": "Primeira Leitura",
+                "Salmo Responsorial": "Salmo",
+                "Segunda Leitura": "Segunda Leitura",
+                "Evangelho": "Evangelho",
+                "Evangelho (Missa do dia)": "Evangelho", 
+                "Salmo": "Salmo" 
+            }
+            
+            for leitura in data.get('leituras', []):
                 if 'texto' in leitura and 'titulo' in leitura and 'ref' in leitura:
-                    tipo_mapeamento = {
-                        "Primeira Leitura": "Primeira Leitura",
-                        "Salmo Responsorial": "Salmo",
-                        "Segunda Leitura": "Segunda Leitura",
-                        "Evangelho": "Evangelho"
-                    }
-                    tipo = tipo_mapeamento.get(leitura['titulo'].strip(), leitura['titulo'].strip())
+                    # Tenta mapear o tipo, caso contrário, usa o título original
+                    tipo_original = leitura['titulo'].strip()
+                    tipo = tipo_mapeamento.get(tipo_original, tipo_original)
                     
                     leituras_formatadas.append({
                         'tipo': tipo,
-                        'titulo': leitura['titulo'],
+                        'titulo': tipo_original,
                         'ref': leitura['ref'],
                         'texto': leitura['texto']
                     })
@@ -192,6 +203,7 @@ def fetch_liturgia(date_obj):
             }
             
             salvar_no_banco(date_str, final_data)
+            st.success(f"Dados de **{date_str}** buscados e salvos no cache. Cor: **{cor}**")
             return final_data
         
         else:
@@ -201,10 +213,9 @@ def fetch_liturgia(date_obj):
     except Timeout:
         st.error("Erro: Tempo limite da requisição à API excedido.")
     except HTTPError as e:
-        st.error(f"Erro HTTP ao buscar dados da API: {e}")
+        st.error(f"Erro HTTP {e.response.status_code} ao buscar dados da API. Detalhe: {e}")
     except RequestException as e:
-        # Diagnóstico de rede mais genérico, já que a URL deve ser resolvida via proxy/Vercel
-        st.error(f"🚨 ERRO DE CONEXÃO 🚨 Falha ao tentar buscar dados da URL: {API_URL}. Verifique se a URL está correta e acessível. Detalhe do erro: {e}")
+        st.error(f"🚨 ERRO DE CONEXÃO 🚨 Falha ao tentar buscar dados da URL: {API_URL}. Detalhe do erro: {e}")
     except json.JSONDecodeError:
         st.error("Erro ao decodificar a resposta JSON da API.")
         
@@ -233,12 +244,17 @@ def create_dashboard_table(data_list):
         progresso = default_progresso.copy()
         progresso.update(progresso_raw)
 
-        if progresso.get('publicacao', False) and not em_producao:
+        # Contagem do progresso para exibir na coluna 'Status'
+        etapas_completas = sum(progresso.values())
+        total_etapas = len(default_progresso)
+        
+        if progresso.get('publicacao', False):
             status_liturgico = "🟢 Publicado"
         elif em_producao:
-            status_liturgico = "🚧 Em Produção"
+            # Mostra o progresso atualizado se estiver em produção
+            status_liturgico = f"🚧 Em Produção ({etapas_completas}/{total_etapas})" 
         elif progresso_raw != default_progresso:
-            status_liturgico = "🟡 Rascunho/Pausado"
+            status_liturgico = f"🟡 Rascunho ({etapas_completas}/{total_etapas})"
         else:
             status_liturgico = "⚪ Inativo"
 
@@ -261,6 +277,7 @@ def create_dashboard_table(data_list):
         st.info("Nenhuma leitura em produção ou com rascunho salvo.")
         return
 
+    # Usando o st.dataframe nativo do Streamlit para tabelas interativas
     df = st.dataframe(
         table_data,
         column_config={
@@ -271,6 +288,7 @@ def create_dashboard_table(data_list):
         column_order=['Data', 'Tipo', 'Status', 'Roteiro', 'Imagem', 'Áudio', 'Overlay', 'Legendas', 'Vídeo', 'Publicar', 'Ação']
     )
     
+    # Processamento do clique do botão na tabela
     clicked_row_index = st.session_state.get('dashboard_action_btn')
     if clicked_row_index is not None and clicked_row_index != -1:
         selected_item = data_list[clicked_row_index]
@@ -287,10 +305,11 @@ def handle_leitura_selection(data_str, tipo_leitura):
         st.error(f"Erro: Data inválida para seleção: {data_str}")
         return
         
+    # Chama fetch_liturgia para garantir que os dados do dia estejam na sessão e no cache
     dados_dia = fetch_liturgia(data_obj) 
     
     if not dados_dia or 'leituras' not in dados_dia:
-        # Se a busca falhou, a mensagem de erro já foi exibida por fetch_liturgia. Apenas retorna.
+        st.warning(f"Não foi possível carregar os dados de liturgia para {data_str}.")
         return
         
     # 2. Encontra a leitura específica
@@ -305,19 +324,22 @@ def handle_leitura_selection(data_str, tipo_leitura):
 
     # 4. Salva no Session State
     st.session_state['data_atual_str'] = data_str
-    st.session_state['leitura_atual'] = leitura_completa
-    st.session_state['leitura_atual']['cor_liturgica'] = dados_dia['cor']
+    # Adiciona a cor litúrgica para ser usada em outras páginas (ex: tema visual do roteiro)
+    leitura_completa['cor_liturgica'] = dados_dia['cor'] 
+    st.session_state['leitura_atual'] = leitura_completa 
     st.session_state['progresso_leitura_atual'] = progresso
     
     # 5. Marca como 'Em Produção' e navega
     chave = f"{data_str}-{tipo_leitura}"
-    update_producao_status(chave, data_str, tipo_leitura, progresso, 1) # 1 = Em Produção
+    # O status 'em_producao' é sempre 1 ao iniciar/continuar a produção
+    update_producao_status(chave, data_str, tipo_leitura, progresso, 1) 
     
     if 'artefatos' not in st.session_state:
         st.session_state['artefatos'] = {}
     
-    st.info(f"Produção de **{tipo_leitura}** de {data_str} iniciada/continuada.")
+    st.info(f"Produção de **{tipo_leitura}** de {data_str} iniciada/continuada. Navegando...")
     st.switch_page("pages/1_Roteiro_Viral.py")
+
 
 # --- FUNÇÃO PARA SELECIONAR DO CACHE ---
 
@@ -338,6 +360,7 @@ def select_from_cache(cached_data_list):
             'Ação': f'<div id="cache_btn_{item["Data"]}"></div>' 
         })
 
+    # Renderiza a tabela de cache
     st.dataframe(
         table_data,
         column_config={
@@ -348,11 +371,13 @@ def select_from_cache(cached_data_list):
         column_order=['Data', 'Cor', 'Último Acesso', 'Ação']
     )
     
+    # Processamento do clique do botão na tabela de cache
     clicked_row_index = st.session_state.get('cache_action_btn')
     if clicked_row_index is not None and clicked_row_index != -1:
         data_str_selecionada = cached_data_list[clicked_row_index]['Data']
+        # Define a data_busca para acionar a lógica de carregamento de dados
         st.session_state['data_busca'] = data_str_selecionada
-        st.success(f"Liturgia de **{data_str_selecionada}** carregada. Veja a seção 'Seleção de Leitura para Produção' abaixo.")
+        st.success(f"Liturgia de **{data_str_selecionada}** selecionada. Use a seção de 'Busca' para recarregar os dados ou veja a seção 'Seleção de Leitura para Produção' abaixo.")
         st.rerun()
 
 
@@ -367,12 +392,15 @@ st.title("📖 Biblia Narrada: Painel de Produção")
 # --- DASHBOARD DE PRODUÇÃO (Tabela) ---
 
 st.header("📋 Dashboard de Leituras em Produção")
+st.markdown("Gerencie o status de produção das leituras ativas e rascunhos salvos.")
 
 leituras_em_producao_full = load_producao_status()
 data_list_dashboard = []
 
+# Filtra: mostra o que está em produção (em_producao=1) ou tem progresso, mas não está publicado e inativo
 for chave, item in leituras_em_producao_full.items():
-    if not (item['progresso'].get('publicacao', False) and not item.get('em_producao', 0)): 
+    is_published_and_inactive = item['progresso'].get('publicacao', False) and not item.get('em_producao', 0)
+    if not is_published_and_inactive:
         data_list_dashboard.append({
             'chave': chave,
             'data_liturgia': item['data_liturgia'],
@@ -399,38 +427,51 @@ st.markdown("---")
 # --- SELEÇÃO DE DATA / BUSCA DE API ---
 st.header("🔍 Buscar Nova Liturgia (API)")
 
-col1, col2 = st.columns([1, 3])
+# Inicia a sessão com data_busca se for o primeiro acesso
+if 'data_busca' not in st.session_state:
+    st.session_state['data_busca'] = datetime.today().strftime('%Y-%m-%d')
 
-data_hoje = datetime.today().date()
-# Obtém a data mais relevante (da busca ou a data de hoje) para o seletor
-data_str_to_fetch = st.session_state.get('data_busca', data_hoje.strftime('%Y-%m-%d'))
-try:
-    data_inicial_obj = datetime.strptime(data_str_to_fetch, '%Y-%m-%d').date()
-except ValueError:
-    data_inicial_obj = data_hoje
 
-with col1:
-    data_selecionada = st.date_input(
-        "📅 Selecionar Data da Liturgia",
-        value=data_inicial_obj,
-        min_value=data_hoje - timedelta(days=180),
-        max_value=data_hoje + timedelta(days=365),
-        key='data_selecao'
-    )
-    
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True) 
+with st.container(border=True):
+    col1, col2 = st.columns([1, 3])
 
-    if st.button("Buscar Liturgia (API/Cache)", type="primary", use_container_width=True):
-        st.session_state['data_busca'] = data_selecionada.strftime('%Y-%m-%d')
-        st.rerun()
+    data_hoje = datetime.today().date()
+    # Obtém a data mais relevante (da busca ou a data de hoje) para o seletor
+    data_str_to_fetch = st.session_state.get('data_busca', data_hoje.strftime('%Y-%m-%d'))
+    try:
+        data_inicial_obj = datetime.strptime(data_str_to_fetch, '%Y-%m-%d').date()
+    except ValueError:
+        data_inicial_obj = data_hoje
+
+    with col1:
+        data_selecionada = st.date_input(
+            "📅 Selecionar Data da Liturgia",
+            value=data_inicial_obj,
+            min_value=data_hoje - timedelta(days=365), 
+            max_value=data_hoje + timedelta(days=365),
+            key='data_selecao'
+        )
+        
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True) 
+
+        if st.button("Buscar Liturgia (API/Cache)", type="primary", use_container_width=True):
+            st.session_state['data_busca'] = data_selecionada.strftime('%Y-%m-%d')
+            # Força o carregamento da nova data
+            if 'dados_liturgia' in st.session_state and st.session_state['dados_liturgia'].get('data') != st.session_state['data_busca']:
+                 del st.session_state['dados_liturgia']
+            st.rerun()
 
 # LÓGICA DE BUSCA E PROCESSAMENTO DE DADOS (Executado após Rerun)
 # Se a data do input for diferente da data da última busca, atualiza a data de busca
 if data_selecionada.strftime('%Y-%m-%d') != st.session_state.get('data_busca'):
     data_str_to_fetch = data_selecionada.strftime('%Y-%m-%d')
+    st.session_state['data_busca'] = data_str_to_fetch
 
 dados_liturgia = None
+data_str_to_fetch = st.session_state.get('data_busca')
+
+# Carrega os dados se eles não estiverem na sessão para a data atual
 if 'dados_liturgia' in st.session_state and st.session_state['dados_liturgia'].get('data') == data_str_to_fetch:
     dados_liturgia = st.session_state['dados_liturgia']
 else:
@@ -440,7 +481,10 @@ else:
         if dados_liturgia:
             st.session_state['dados_liturgia'] = dados_liturgia
     except ValueError:
-        st.error("Formato de data inválido. Use AAAA-MM-DD.")
+        pass
+    except TypeError:
+        pass
+
 
 # --- RENDERIZAÇÃO DA LITURGIA (Se disponível) ---
 
@@ -450,6 +494,7 @@ if dados_liturgia:
     liturgia_info = f"**{dados_liturgia.get('nome_dia', 'Dia Litúrgico')}**"
     cor_liturgica = dados_liturgia.get('cor', 'Branco')
     
+    # Mapeamento de cores para um visual mais agradável
     cor_map = {
         'Verde': '#d4edda', 
         'Branco': '#f8f9fa', 
@@ -459,10 +504,11 @@ if dados_liturgia:
     }
     bg_color = cor_map.get(cor_liturgica, '#f8f9fa')
 
+    # Banner colorido usando HTML/CSS
     st.markdown(f"""
-    <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px;">
-        <h3 style="margin-top: 0;">{liturgia_info}</h3>
-        <p>Data: {data_str_to_fetch} | Cor Litúrgica: <strong>{cor_liturgica}</strong></p>
+    <div style="background-color: {bg_color}; padding: 15px; border-radius: 8px; border: 1px solid #ccc;">
+        <h3 style="margin-top: 0; color: #333;">{liturgia_info}</h3>
+        <p style="margin-bottom: 0;">Data: {data_str_to_fetch} | Cor Litúrgica: <strong>{cor_liturgica}</strong></p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -486,30 +532,50 @@ if dados_liturgia:
             })
 
     
-    cols_leituras = st.columns(len(leituras_disponiveis) if leituras_disponiveis else 1)
-    
-    default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
+    # Renderiza as colunas de leituras
+    if leituras_disponiveis:
+        cols_leituras = st.columns(len(leituras_disponiveis))
+        
+        default_progresso = {"roteiro": False, "imagens": False, "audio": False, "overlay": False, "legendas": False, "video": False, "publicacao": False}
 
-    for i, leitura in enumerate(leituras_disponiveis):
-        progresso = leitura['progresso']
-        status_emoji = get_status_emoji('publicacao', progresso) if progresso.get('publicacao') else get_status_emoji('video', progresso)
-        
-        btn_label = f"{status_emoji} {leitura['tipo']}"
-        
-        btn_type = "primary" if leitura['em_producao'] else "secondary"
-        
-        with cols_leituras[i]:
-             with st.container(border=True):
-                 st.markdown(f"**{leitura['tipo']}**")
-                 st.caption(leitura['ref'])
-                 
-                 if leitura['progresso'] != default_progresso:
+        for i, leitura in enumerate(leituras_disponiveis):
+            progresso = leitura['progresso']
+            
+            # Define o status e o tipo de botão
+            if leitura['em_producao']:
+                 status_texto = "Continuar Produção"
+                 btn_type = "primary"
+                 icone = "➡️"
+            elif progresso.get('publicacao', False):
+                 status_texto = "Visualizar (Publicado)"
+                 btn_type = "secondary"
+                 icone = "👁️"
+            elif progresso != default_progresso:
+                 status_texto = "Continuar Rascunho"
+                 btn_type = "secondary"
+                 icone = "✍️"
+            else:
+                 status_texto = "Iniciar Produção"
+                 btn_type = "secondary"
+                 icone = "➕"
+
+            
+            with cols_leituras[i]:
+                 with st.container(border=True):
+                     st.markdown(f"**{leitura['tipo']}**")
+                     st.caption(leitura['ref'])
+                     
                      etapas_completas = sum(leitura['progresso'].values())
-                     st.progress(etapas_completas / 7, text=f"Progresso: {etapas_completas}/7 etapas completas") 
-                 
-                 
-                 if st.button(btn_label, key=f"select_leitura_{leitura['chave']}", type=btn_type, use_container_width=True):
-                    handle_leitura_selection(data_str_to_fetch, leitura['tipo'])
+                     total_etapas = len(default_progresso)
+                     progress_value = etapas_completas / total_etapas
+                     
+                     st.progress(progress_value, text=f"Progresso: {etapas_completas}/{total_etapas} etapas") 
+                     
+                     # Botão de Ação
+                     if st.button(f"{icone} {status_texto}", key=f"select_leitura_{leitura['chave']}", type=btn_type, use_container_width=True):
+                        handle_leitura_selection(data_str_to_fetch, leitura['tipo'])
+    else:
+        st.info("Nenhuma leitura encontrada para a data selecionada.")
 
 else:
     st.warning("Liturgia não carregada. Por favor, use a lista do cache ou tente buscar uma nova data na API.")
@@ -517,5 +583,5 @@ else:
 # --- FOOTER ---
 st.markdown("---")
 # A variável BASE_URL é definida dentro de fetch_liturgia, então usamos o segredo ou o fallback aqui para o aviso
-api_warning_url = st.secrets.get("LITURGIA_API_BASE_URL", "api.liturgiadiaria.net")
-st.caption(f"Dados da liturgia fornecidos por {api_warning_url}. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+api_warning_url = st.secrets.get("LITURGIA_API_BASE_URL", "https://api.liturgiadiaria.net/api/v1/liturgia")
+st.caption(f"Dados da liturgia fornecidos pela API. Fonte: `{api_warning_url}`. Última atualização de status: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
