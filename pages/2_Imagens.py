@@ -73,13 +73,20 @@ def salvar_imagem_local(url_imagem, nome_arquivo):
         return None
 
 def salvar_upload_local(uploaded_file, nome_arquivo):
-    """Salva uma imagem enviada pelo usuário via Upload."""
+    """
+    Salva uma imagem enviada pelo usuário via Upload.
+    Converte para PNG para evitar erros de extensão.
+    """
     try:
         pasta_destino = obter_pasta_destino()
         caminho_completo = os.path.join(pasta_destino, nome_arquivo)
         
-        with open(caminho_completo, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        # Abre a imagem usando PIL para garantir formato
+        image = Image.open(uploaded_file)
+        
+        # Salva forçando formato PNG
+        image.save(caminho_completo, format="PNG")
+        
         return caminho_completo
     except Exception as e:
         st.error(f"Erro ao salvar upload: {e}")
@@ -136,7 +143,7 @@ def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
             prompt_editavel = st.text_area(
                 "Prompt (Inglês):", 
                 value=prompt_padrao, 
-                height=150,
+                height=100,
                 key=f"txt_{chave_bloco}"
             )
             
@@ -164,7 +171,10 @@ def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
             )
             
             if uploaded_file is not None:
-                if st.button(f"💾 Salvar Upload - {titulo_bloco}", key=f"btn_up_{chave_bloco}"):
+                # Mostra preview imediato do que está na memória (antes de salvar)
+                st.image(uploaded_file, caption="Pré-visualização do Upload", width=150)
+                
+                if st.button(f"💾 Confirmar e Salvar Upload", key=f"btn_up_{chave_bloco}"):
                     nome_arquivo = f"{chave_bloco}.png"
                     caminho_salvo = salvar_upload_local(uploaded_file, nome_arquivo)
                     if caminho_salvo:
@@ -174,10 +184,12 @@ def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
                         st.rerun()
 
         with col_img:
+            # Exibe a imagem que está salva no sistema (Disco)
             caminho_existente = progresso['caminhos_imagens'].get(chave_bloco)
             if caminho_existente and os.path.exists(caminho_existente):
+                # Usamos Image.open para garantir que o Streamlit carregue o arquivo fresco
                 image = Image.open(caminho_existente)
-                st.image(image, caption=f"Imagem Atual - {titulo_bloco}", use_container_width=True)
+                st.image(image, caption=f"Imagem Definida - {titulo_bloco}", use_container_width=True)
             else:
                 st.info("Nenhuma imagem definida.")
                 st.markdown("""<div style="border: 2px dashed #ccc; padding: 100px; text-align: center; color: #ccc;">Visualização 9:16</div>""", unsafe_allow_html=True)
@@ -199,7 +211,7 @@ with col_nav_3:
         if st.button("Próximo: Gerar Áudios ➡️", type="primary", use_container_width=True):
             progresso['imagens_prontas'] = True
             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-            # CORREÇÃO AQUI: Apontando para o arquivo correto
+            # Apontando corretamente para o arquivo que criamos anteriormente
             st.switch_page("pages/3_Audio_TTS.py")
     else:
         st.button("Próximo ➡️", disabled=True, use_container_width=True, help="Defina as 4 imagens para continuar.")
