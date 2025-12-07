@@ -1,7 +1,7 @@
 import streamlit as st
 import datetime
 import requests
-from modules import database as db  # CORREÇÃO: Importando corretamente da pasta 'modules'
+from modules import database as db  # CORREÇÃO: Importa do pacote modules
 # import audio_generator as ag # Descomente se tiver o gerador de áudio
 
 # Configuração da Página
