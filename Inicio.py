@@ -1,155 +1,119 @@
 import streamlit as st
 import sys
 import os
-import json
 from datetime import datetime
 
 # ---------------------------------------------------------------------
-# 1. CONFIGURAÇÃO DE DIRETÓRIOS E IMPORTAÇÕES (ROBUSTO)
+# 1. CORREÇÃO DE IMPORTAÇÃO (BANCO DE DADOS)
 # ---------------------------------------------------------------------
+# Garante que encontra o modules.database ou database local
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
-# Tenta importar o banco de dados de diferentes locais para evitar erros
 try:
-    # Tenta primeiro da pasta modules (padrão do projeto atual)
     import modules.database as db
 except ImportError:
     try:
-        # Se falhar, tenta da raiz (padrão antigo)
         import database as db
     except ImportError:
-        st.error("🚨 Erro Crítico: O arquivo 'database.py' não foi encontrado nem na pasta raiz nem em 'modules/'. Verifique a estrutura.")
+        st.error("Erro: Banco de dados não encontrado.")
         st.stop()
 
 # ---------------------------------------------------------------------
 # 2. CONFIGURAÇÃO DA PÁGINA
 # ---------------------------------------------------------------------
-st.set_page_config(
-    page_title="Bíblia Narrada - Studio",
-    page_icon="🎬",
-    layout="wide"
-)
+st.set_page_config(page_title="Início - Bíblia Narrada", layout="wide")
+
+st.title("📅 Seleção da Liturgia")
 
 # ---------------------------------------------------------------------
-# 3. INTERFACE PRINCIPAL
+# 3. BUSCA POR DATA (FUNCIONALIDADE RESTAURADA)
 # ---------------------------------------------------------------------
+st.markdown("### Escolha a data da leitura")
 
-st.title("🎬 Bíblia Narrada Studio")
-st.markdown("### Painel de Controle e Início Rápido")
+col_data, col_tipo, col_btn = st.columns([1, 1, 1])
 
-st.divider()
+with col_data:
+    # O SELETOR DE DATA QUE VOCÊ QUERIA
+    data_selecionada = st.date_input("Data:", datetime.today())
+    data_str = data_selecionada.strftime('%Y-%m-%d')
 
-# --- ÁREA DE CRIAÇÃO DE NOVA LEITURA ---
-col_new_1, col_new_2 = st.columns([2, 1])
+with col_tipo:
+    tipo_leitura = st.selectbox(
+        "Tipo de Leitura:",
+        ["Evangelho", "Primeira Leitura", "Segunda Leitura", "Salmo"],
+        index=0
+    )
 
-with col_new_1:
-    st.info("Comece aqui criando uma nova automação para hoje.")
-    
-    # Formulário simples para iniciar
-    with st.form("nova_producao"):
-        st.subheader("🚀 Nova Produção")
+with col_btn:
+    st.write("") # Espaçamento
+    st.write("") 
+    if st.button("🚀 Buscar e Iniciar", type="primary", use_container_width=True):
+        # Define os dados na sessão para a Página 1 usar
+        st.session_state['leitura_atual'] = {
+            "tipo": tipo_leitura,
+            "titulo": f"Liturgia de {data_selecionada.strftime('%d/%m')}", # Título provisório, a pág 1 puxa o real
+            "ref": "Carregando...",
+            "texto": "", # A página 1 vai carregar/raspar o texto baseada na data
+            "data": data_str
+        }
+        st.session_state['data_atual_str'] = data_str
+
+        # Cria/Atualiza entrada no Banco de Dados para não dar erro depois
+        chave = f"{data_str}-{tipo_leitura}"
         
-        # Seleção do Tipo de Leitura
-        tipo_leitura = st.selectbox(
-            "Tipo de Conteúdo:",
-            ["Salmos", "Provérbios", "Parábolas", "Histórias", "Devocional"],
-            index=0
-        )
+        # Estrutura inicial vazia (necessária para as páginas de imagem/audio não quebrarem)
+        novo_status = {
+            "roteiro_pronto": False,
+            "imagens_prontas": False,
+            "audios_prontos": False,
+            "prompts_imagem": {},
+            "caminhos_imagens": {},
+            "caminhos_audios": {},
+            "bloco_leitura": "",
+            "bloco_reflexao": "",
+            "bloco_aplicacao": "",
+            "bloco_oracao": ""
+        }
         
-        # Input do Texto Bíblico ou Referência
-        referencia = st.text_input("Referência ou Título (Ex: Salmo 23, O Filho Pródigo):")
-        
-        # Botão de Submit
-        submitted = st.form_submit_button("Iniciar Produção ✨")
-        
-        if submitted and referencia:
-            # 1. Define dados iniciais
-            data_hoje = datetime.today().strftime('%Y-%m-%d')
-            novo_status = {
-                "roteiro_pronto": False,
-                "imagens_prontas": False,
-                "audios_prontos": False,
-                "video_pronto": False,
-                "prompts_imagem": {},
-                "caminhos_imagens": {},
-                "caminhos_audios": {},
-                "bloco_leitura": "",
-                "bloco_reflexao": "",
-                "bloco_aplicacao": "",
-                "bloco_oracao": ""
-            }
-            
-            # 2. Salva no Session State
-            st.session_state['leitura_atual'] = {
-                "tipo": tipo_leitura,
-                "titulo": referencia,
-                "data": data_hoje
-            }
-            st.session_state['data_atual_str'] = data_hoje
-            
-            # 3. Cria entrada inicial no JSON (Database)
-            chave = f"{data_hoje}-{tipo_leitura}"
-            db.update_status(chave, data_hoje, tipo_leitura, novo_status, 0)
-            
-            st.success(f"Projeto '{referencia}' iniciado!")
-            
-            # 4. Redireciona para o Roteiro
-            st.switch_page("pages/1_Roteiro_Viral.py")
+        # Inicia no banco (preserva se já existir)
+        db.update_status(chave, data_str, tipo_leitura, novo_status, 0)
 
-with col_new_2:
-    st.markdown("#### 📊 Status do Sistema")
-    # Data atual
-    st.markdown(f"**Data:** {datetime.today().strftime('%d/%m/%Y')}")
-    st.success("Sistema Online")
-    
-    st.markdown("---")
-    st.markdown("**Dica:** Siga a numeração das páginas na barra lateral.")
+        # Vai para a página do Roteiro
+        st.switch_page("pages/1_Roteiro_Viral.py")
 
 st.divider()
 
 # ---------------------------------------------------------------------
-# 4. DASHBOARD DE PRODUÇÕES RECENTES
+# 4. HISTÓRICO RECENTE (COM A CORREÇÃO DO CRASH)
 # ---------------------------------------------------------------------
-st.subheader("📂 Produções Recentes")
+st.subheader("📂 Continuar Produções Recentes")
 
-# Carrega todas as produções salvas no JSON
 producoes = db.load_recent_productions()
 
-if not producoes:
-    st.write("Nenhuma produção encontrada no histórico.")
-else:
-    # Exibe em cards
+if producoes:
     for item in producoes:
         with st.container():
-            col_a, col_b, col_c = st.columns([1, 3, 2])
-            
-            with col_a:
-                st.markdown(f"## 📅")
-                st.caption(item['data'])
-            
-            with col_b:
-                st.markdown(f"**{item['tipo']}**")
-                st.caption("Projeto salvo")
-            
-            with col_c:
-                # --- CORREÇÃO DO ERRO DE TYPEERROR ---
-                # Conta apenas valores True, ignorando strings (caminhos de arquivos)
-                etapas_concluidas = sum(1 for v in item['progresso'].values() if v is True)
+            c1, c2, c3 = st.columns([1, 4, 2])
+            with c1:
+                st.write(f"📅 **{item['data']}**")
+            with c2:
+                st.write(f"📖 {item['tipo']}")
+            with c3:
+                # --- AQUI ESTAVA O ERRO QUE QUEBRAVA O APP ---
+                # Correção: Soma apenas valores True, ignora textos de imagem/audio
+                etapas = sum(1 for v in item['progresso'].values() if v is True)
                 
-                # Total estimado de etapas principais (Roteiro, Imagem, Audio, Video)
-                total_etapas = 4
-                progresso_pct = min(etapas_concluidas / total_etapas, 1.0)
-                
-                st.progress(progresso_pct, text=f"Progresso: {int(progresso_pct*100)}%")
-                
-                if st.button("Continuar ➡️", key=f"btn_{item['id']}"):
+                if st.button(f"Continuar (Etapa {etapas})", key=item['id']):
                     st.session_state['leitura_atual'] = {
                         "tipo": item['tipo'],
-                        "titulo": item['tipo'],
-                        "data": item['data']
+                        "titulo": f"Retomando {item['tipo']}",
+                        "data": item['data'],
+                        "ref": "", # Será recarregado
+                        "texto": ""
                     }
                     st.session_state['data_atual_str'] = item['data']
                     st.switch_page("pages/1_Roteiro_Viral.py")
-            
             st.markdown("---")
+else:
+    st.info("Nenhuma produção recente encontrada.")
