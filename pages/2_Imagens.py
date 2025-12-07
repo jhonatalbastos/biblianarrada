@@ -45,22 +45,23 @@ progresso, em_producao = db.load_status(chave_progresso)
 prompts_salvos = progresso.get('prompts_imagem', {})
 
 # ---------------------------------------------------------------------
-# 4. FUNÇÕES UTILITÁRIAS (POLLINATIONS.AI)
+# 4. FUNÇÕES UTILITÁRIAS
 # ---------------------------------------------------------------------
+
+def obter_pasta_destino():
+    """Retorna o caminho da pasta onde as imagens serão salvas."""
+    pasta = os.path.join(parent_dir, "generated_images", data_str, leitura['tipo'])
+    os.makedirs(pasta, exist_ok=True)
+    return pasta
 
 def salvar_imagem_local(url_imagem, nome_arquivo):
     """
-    Baixa a imagem da URL e salva em uma pasta local 'generated_images'.
-    Retorna o caminho relativo para salvar no banco.
+    Baixa a imagem da URL (IA) e salva localmente.
     """
     try:
-        # Cria estrutura de pastas: generated_images/ANO-MES-DIA/TIPO_LEITURA/
-        pasta_destino = os.path.join(parent_dir, "generated_images", data_str, leitura['tipo'])
-        os.makedirs(pasta_destino, exist_ok=True)
-        
+        pasta_destino = obter_pasta_destino()
         caminho_completo = os.path.join(pasta_destino, nome_arquivo)
         
-        # Faz o download da imagem
         response = requests.get(url_imagem)
         if response.status_code == 200:
             with open(caminho_completo, 'wb') as f:
@@ -73,24 +74,32 @@ def salvar_imagem_local(url_imagem, nome_arquivo):
         st.error(f"Erro ao salvar imagem: {e}")
         return None
 
+def salvar_upload_local(uploaded_file, nome_arquivo):
+    """
+    Salva uma imagem enviada pelo usuário via Upload.
+    """
+    try:
+        pasta_destino = obter_pasta_destino()
+        # Garante que salva com a extensão correta ou fixa png
+        caminho_completo = os.path.join(pasta_destino, nome_arquivo)
+        
+        with open(caminho_completo, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return caminho_completo
+    except Exception as e:
+        st.error(f"Erro ao salvar upload: {e}")
+        return None
+
 def gerar_imagem_pollinations(prompt):
     """
     Gera imagem usando Pollinations.ai (Gratuito e Rápido).
     Formato forçado: 9:16 (720x1280).
     """
     try:
-        # Limpa e encoda o prompt para URL
         prompt_clean = prompt.replace("\n", " ").strip()
         prompt_encoded = quote(prompt_clean)
-        
-        # Gera uma seed aleatória para garantir variedade
         seed = random.randint(0, 999999)
-        
-        # Constrói a URL do Pollinations
-        # model=flux (Geralmente o melhor/mais rápido atual deles)
-        # width=720, height=1280 (Proporção 9:16)
         url = f"https://pollinations.ai/p/{prompt_encoded}?width=720&height=1280&seed={seed}&model=flux&nologo=true"
-        
         return url
     except Exception as e:
         st.error(f"Erro na construção da URL Pollinations: {e}")
@@ -100,13 +109,13 @@ def gerar_imagem_pollinations(prompt):
 # 5. INTERFACE
 # ---------------------------------------------------------------------
 
-st.title("🎨 Passo 2: Criação de Imagens (Pollinations)")
+st.title("🎨 Passo 2: Criação de Imagens")
 
 # Header
 cols_header = st.columns([3, 1])
 with cols_header[0]:
     st.markdown(f"**Leitura:** {leitura['titulo']}")
-    st.caption("Gerador: Pollinations AI | Formato: 9:16 (Vertical)")
+    st.caption("Gerador: Pollinations AI | Upload Próprio | Formato: 9:16")
 with cols_header[1]:
     if st.button("🔙 Voltar ao Roteiro"):
         st.switch_page("pages/1_Roteiro_Viral.py")
@@ -131,36 +140,52 @@ def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
         
         col_txt, col_img = st.columns([1, 1])
         
-        # --- COLUNA DA ESQUERDA: PROMPT E GERAÇÃO ---
+        # --- COLUNA DA ESQUERDA: PROMPT E CONTROLES ---
         with col_txt:
+            # 1. Opção de Gerar com IA
+            st.markdown("#### 🤖 Gerar com IA")
             prompt_padrao = prompts_salvos.get(chave_bloco, "")
             prompt_editavel = st.text_area(
-                "Prompt (Inglês - Editável):", 
+                "Prompt (Inglês):", 
                 value=prompt_padrao, 
-                height=200,
-                key=f"txt_{chave_bloco}",
-                help="O Pollinations entende melhor prompts em inglês."
+                height=150,
+                key=f"txt_{chave_bloco}"
             )
             
-            if st.button(f"✨ Gerar Imagem (Turbo) - {titulo_bloco}", key=f"btn_{chave_bloco}", type="primary"):
+            if st.button(f"✨ Gerar Imagem (Turbo)", key=f"btn_{chave_bloco}", type="primary"):
                 with st.spinner("Gerando imagem via Pollinations..."):
-                    # 1. Obtém a URL gerada
                     url_gerada = gerar_imagem_pollinations(prompt_editavel)
-                    
                     if url_gerada:
-                        # 2. Baixa e salva localmente
                         nome_arquivo = f"{chave_bloco}.png"
                         caminho_salvo = salvar_imagem_local(url_gerada, nome_arquivo)
-                        
                         if caminho_salvo:
                             progresso['caminhos_imagens'][chave_bloco] = caminho_salvo
-                            # Atualiza prompt caso tenha sido editado
                             progresso['prompts_imagem'][chave_bloco] = prompt_editavel
-                            
-                            # Salva no banco
                             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-                            st.success("Imagem salva com sucesso!")
+                            st.success("Imagem IA gerada e salva!")
                             st.rerun()
+            
+            st.markdown("---")
+            
+            # 2. Opção de Upload Próprio
+            st.markdown("#### 📤 Ou faça Upload")
+            uploaded_file = st.file_uploader(
+                "Envie sua própria imagem (Prefira Vertical 9:16)", 
+                type=['png', 'jpg', 'jpeg'],
+                key=f"up_{chave_bloco}"
+            )
+            
+            if uploaded_file is not None:
+                # Botão para confirmar o upload (evita processamento acidental repetido)
+                if st.button(f"💾 Salvar Upload - {titulo_bloco}", key=f"btn_up_{chave_bloco}"):
+                    nome_arquivo = f"{chave_bloco}.png" # Salva com mesmo nome para manter padrão
+                    caminho_salvo = salvar_upload_local(uploaded_file, nome_arquivo)
+                    
+                    if caminho_salvo:
+                        progresso['caminhos_imagens'][chave_bloco] = caminho_salvo
+                        db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
+                        st.success("Imagem enviada salva com sucesso!")
+                        st.rerun()
 
         # --- COLUNA DA DIREITA: VISUALIZAÇÃO ---
         with col_img:
@@ -169,10 +194,9 @@ def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
             if caminho_existente and os.path.exists(caminho_existente):
                 # Exibe a imagem salva
                 image = Image.open(caminho_existente)
-                st.image(image, caption=f"Imagem Salva (9:16) - {titulo_bloco}", use_container_width=True)
+                st.image(image, caption=f"Imagem Atual - {titulo_bloco}", use_container_width=True)
             else:
-                st.info("Nenhuma imagem gerada ainda.")
-                # Placeholder visual
+                st.info("Nenhuma imagem definida.")
                 st.markdown(
                     """
                     <div style="border: 2px dashed #ccc; padding: 100px; text-align: center; color: #ccc;">
@@ -206,4 +230,4 @@ with col_nav_3:
             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
             st.switch_page("pages/3_Audios.py")
     else:
-        st.button("Próximo ➡️", disabled=True, use_container_width=True, help="Gere as 4 imagens para continuar.")
+        st.button("Próximo ➡️", disabled=True, use_container_width=True, help="Defina as 4 imagens para continuar.")
