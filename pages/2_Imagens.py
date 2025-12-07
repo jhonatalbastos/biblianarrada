@@ -55,9 +55,7 @@ def obter_pasta_destino():
     return pasta
 
 def salvar_imagem_local(url_imagem, nome_arquivo):
-    """
-    Baixa a imagem da URL (IA) e salva localmente.
-    """
+    """Baixa a imagem da URL (IA) e salva localmente."""
     try:
         pasta_destino = obter_pasta_destino()
         caminho_completo = os.path.join(pasta_destino, nome_arquivo)
@@ -75,12 +73,9 @@ def salvar_imagem_local(url_imagem, nome_arquivo):
         return None
 
 def salvar_upload_local(uploaded_file, nome_arquivo):
-    """
-    Salva uma imagem enviada pelo usuário via Upload.
-    """
+    """Salva uma imagem enviada pelo usuário via Upload."""
     try:
         pasta_destino = obter_pasta_destino()
-        # Garante que salva com a extensão correta ou fixa png
         caminho_completo = os.path.join(pasta_destino, nome_arquivo)
         
         with open(caminho_completo, "wb") as f:
@@ -91,10 +86,7 @@ def salvar_upload_local(uploaded_file, nome_arquivo):
         return None
 
 def gerar_imagem_pollinations(prompt):
-    """
-    Gera imagem usando Pollinations.ai (Gratuito e Rápido).
-    Formato forçado: 9:16 (720x1280).
-    """
+    """Gera imagem usando Pollinations.ai (Gratuito e Rápido)."""
     try:
         prompt_clean = prompt.replace("\n", " ").strip()
         prompt_encoded = quote(prompt_clean)
@@ -122,12 +114,10 @@ with cols_header[1]:
 
 st.divider()
 
-# Verifica se existem prompts
 if not prompts_salvos:
     st.warning("⚠️ Não foram encontrados prompts de imagem. Volte ao Passo 1 e gere o roteiro com IA.")
     st.stop()
 
-# Inicializa dicionário de caminhos de imagem no progresso se não existir
 if 'caminhos_imagens' not in progresso:
     progresso['caminhos_imagens'] = {}
 
@@ -137,10 +127,8 @@ tab1, tab2, tab3, tab4 = st.tabs(["1. Leitura", "2. Reflexão", "3. Aplicação"
 def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
     with tab_obj:
         st.subheader(f"🖼️ Imagem: {titulo_bloco}")
-        
         col_txt, col_img = st.columns([1, 1])
         
-        # --- COLUNA DA ESQUERDA: PROMPT E CONTROLES ---
         with col_txt:
             # 1. Opção de Gerar com IA
             st.markdown("#### 🤖 Gerar com IA")
@@ -176,47 +164,31 @@ def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
             )
             
             if uploaded_file is not None:
-                # Botão para confirmar o upload (evita processamento acidental repetido)
                 if st.button(f"💾 Salvar Upload - {titulo_bloco}", key=f"btn_up_{chave_bloco}"):
-                    nome_arquivo = f"{chave_bloco}.png" # Salva com mesmo nome para manter padrão
+                    nome_arquivo = f"{chave_bloco}.png"
                     caminho_salvo = salvar_upload_local(uploaded_file, nome_arquivo)
-                    
                     if caminho_salvo:
                         progresso['caminhos_imagens'][chave_bloco] = caminho_salvo
                         db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
                         st.success("Imagem enviada salva com sucesso!")
                         st.rerun()
 
-        # --- COLUNA DA DIREITA: VISUALIZAÇÃO ---
         with col_img:
             caminho_existente = progresso['caminhos_imagens'].get(chave_bloco)
-            
             if caminho_existente and os.path.exists(caminho_existente):
-                # Exibe a imagem salva
                 image = Image.open(caminho_existente)
                 st.image(image, caption=f"Imagem Atual - {titulo_bloco}", use_container_width=True)
             else:
                 st.info("Nenhuma imagem definida.")
-                st.markdown(
-                    """
-                    <div style="border: 2px dashed #ccc; padding: 100px; text-align: center; color: #ccc;">
-                        Visualização 9:16
-                    </div>
-                    """, unsafe_allow_html=True
-                )
+                st.markdown("""<div style="border: 2px dashed #ccc; padding: 100px; text-align: center; color: #ccc;">Visualização 9:16</div>""", unsafe_allow_html=True)
 
-# Renderiza as 4 abas
 renderizar_aba_imagem(tab1, "bloco_1", "Bloco 1 (Leitura)")
 renderizar_aba_imagem(tab2, "bloco_2", "Bloco 2 (Reflexão)")
 renderizar_aba_imagem(tab3, "bloco_3", "Bloco 3 (Aplicação)")
 renderizar_aba_imagem(tab4, "bloco_4", "Bloco 4 (Oração)")
 
-# ---------------------------------------------------------------------
-# 6. VERIFICAÇÃO FINAL E NAVEGAÇÃO
-# ---------------------------------------------------------------------
 st.divider()
 
-# Verifica se todas as 4 imagens existem
 imgs = progresso.get('caminhos_imagens', {})
 tem_todas = all(k in imgs for k in ["bloco_1", "bloco_2", "bloco_3", "bloco_4"])
 
@@ -225,9 +197,9 @@ col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
 with col_nav_3:
     if tem_todas:
         if st.button("Próximo: Gerar Áudios ➡️", type="primary", use_container_width=True):
-            # Marca etapa como concluída no banco
             progresso['imagens_prontas'] = True
             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-            st.switch_page("pages/3_Audios.py")
+            # CORREÇÃO AQUI: Apontando para o arquivo correto
+            st.switch_page("pages/3_Audio_TTS.py")
     else:
         st.button("Próximo ➡️", disabled=True, use_container_width=True, help="Defina as 4 imagens para continuar.")
