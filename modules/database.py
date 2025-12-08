@@ -57,3 +57,55 @@ def carregar_liturgia(data_str):
         return None
     finally:
         conn.close()
+        # --- Adicionar ao final de modules/database.py ---
+
+def create_status_table(conn):
+    """Cria tabela para controlar o status de produção de cada vídeo."""
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS producao_status (
+            chave_id TEXT PRIMARY KEY,
+            data_ref TEXT,
+            tipo_leitura TEXT,
+            progresso_json TEXT,
+            etapa_atual INTEGER
+        )
+    ''')
+    conn.commit()
+
+def load_status(chave_id):
+    """
+    Carrega o status de produção.
+    Retorna: (dict_progresso, booleano_existe)
+    """
+    conn = get_connection()
+    create_status_table(conn) # Garante que a tabela existe
+    c = conn.cursor()
+    try:
+        c.execute('SELECT progresso_json FROM producao_status WHERE chave_id = ?', (chave_id,))
+        row = c.fetchone()
+        if row:
+            return json.loads(row[0]), True
+        return {}, False # Retorna dict vazio se não existir
+    except Exception as e:
+        print(f"Erro load_status: {e}")
+        return {}, False
+    finally:
+        conn.close()
+
+def update_status(chave_id, data_ref, tipo, progresso_dict, etapa_code):
+    """Salva ou atualiza o progresso."""
+    conn = get_connection()
+    create_status_table(conn)
+    c = conn.cursor()
+    try:
+        progresso_json = json.dumps(progresso_dict, ensure_ascii=False)
+        c.execute('''
+            INSERT OR REPLACE INTO producao_status (chave_id, data_ref, tipo_leitura, progresso_json, etapa_atual)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (chave_id, data_ref, tipo, progresso_json, etapa_code))
+        conn.commit()
+    except Exception as e:
+        print(f"Erro update_status: {e}")
+    finally:
+        conn.close()
