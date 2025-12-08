@@ -134,9 +134,6 @@ def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, status_conta
     criar_arquivo_concat(imagens, tempo_por_img, concat_txt)
     
     # 3. Monta comando FFmpeg
-    # Nota: No Windows, caminhos absolutos no filtro subtitles exigem tratamento especial de barras.
-    # Usaremos barras normais (/) para evitar problemas de escape.
-    
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0", "-i", concat_txt,  # Input Vídeo
@@ -147,13 +144,15 @@ def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, status_conta
     filtros = []
     
     if srt_path and os.path.exists(srt_path):
-        # Transforma caminho para formato aceito pelo FFmpeg (escapes e barras)
-        # O jeito mais seguro é usar o nome do arquivo se estiver na mesma pasta, ou escape complexo.
-        # Vamos tentar usar caminho relativo convertendo barras.
-        srt_safe = srt_path.replace("\\", "/").replace(":", "\\:")
+        # Transforma caminho para formato aceito pelo FFmpeg
+        # No Linux (seu ambiente), caminhos normais funcionam bem.
+        # Asseguramos apenas que não haja caracteres estranhos.
+        srt_safe = srt_path
         
-        # Estilo das legendas (Fonte grande, amarela ou branca com borda preta)
-        style = "ForceStyle='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,MarginV=20'"
+        # CORREÇÃO DO ERRO: force_style (minúsculo)
+        style = "force_style='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,MarginV=20'"
+        
+        # Monta o filtro: subtitles='caminho':force_style='...'
         filtros.append(f"subtitles='{srt_safe}':{style}")
     
     # Adiciona filtros se houver
@@ -216,7 +215,7 @@ if st.button("🎬 Renderizar Vídeo Final", type="primary"):
     
     path_audio = progresso.get('audio_path', '')
     path_imgs = progresso.get('imagens_paths', [])
-    path_video = os.path.join(folder_video, f"video_{data_str}_{leitura['tipo']}.mp4")
+    path_video = os.path.join(folder_video, f"video_{data_str}_{leitura['tipo'].replace(' ', '_')}.mp4")
     
     # 2. Gera SRT temporário se houver legendas
     path_srt = None
