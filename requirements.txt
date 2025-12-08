@@ -9,6 +9,5 @@ edge-tts
 moviepy
 groq
 piper-tts
-piper
 ffmpeg-python
 beautifulsoup4
