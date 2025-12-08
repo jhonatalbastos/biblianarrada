@@ -59,7 +59,7 @@ def render_navigation_bar(current_page_title):
                     st.switch_page(page)
     st.markdown("---")
 
-render_navigation_bar("🎬 Renderização Final (Com Legendas)")
+render_navigation_bar("🎬 Renderização Final")
 
 # ---------------------------------------------------------------------
 # 3. FUNÇÕES UTILITÁRIAS (FFMPEG + SRT)
@@ -78,9 +78,13 @@ def criar_arquivo_srt(legendas_dados, output_path):
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             for i, item in enumerate(legendas_dados):
-                start = format_timestamp(item['start'])
-                end = format_timestamp(item['end'])
-                text = item['text']
+                # Garante que start e end sejam floats
+                start_t = float(item.get('start', 0))
+                end_t = float(item.get('end', 0))
+                text = str(item.get('text', '')).strip()
+                
+                start = format_timestamp(start_t)
+                end = format_timestamp(end_t)
                 
                 f.write(f"{i+1}\n")
                 f.write(f"{start} --> {end}\n")
@@ -110,12 +114,12 @@ def criar_arquivo_concat(imagens, duracao_por_imagem, output_txt):
             safe_path = img_path.replace("'", "'\\''")
             f.write(f"file '{safe_path}'\n")
             f.write(f"duration {duracao_por_imagem:.2f}\n")
-        # Repete a última imagem
+        # Repete a última imagem para garantir cobertura do áudio final
         if imagens:
             safe_last = imagens[-1].replace("'", "'\\''")
             f.write(f"file '{safe_last}'\n")
 
-def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, status_container):
+def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, font_config, status_container):
     """Renderiza vídeo + áudio + legendas (burn-in)."""
     
     # 1. Analisa Áudio
@@ -144,15 +148,19 @@ def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, status_conta
     filtros = []
     
     if srt_path and os.path.exists(srt_path):
-        # Transforma caminho para formato aceito pelo FFmpeg
-        # No Linux (seu ambiente), caminhos normais funcionam bem.
-        # Asseguramos apenas que não haja caracteres estranhos.
         srt_safe = srt_path
         
-        # CORREÇÃO DO ERRO: force_style (minúsculo)
-        style = "force_style='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,MarginV=20'"
+        # Parâmetros de Estilo configuráveis
+        f_size = font_config['size']
+        f_color = font_config['color'] # Formato &HBBGGRR (&H00FFFFFF é branco)
+        f_margin = font_config['margin_v']
         
-        # Monta o filtro: subtitles='caminho':force_style='...'
+        # Alignment=2 (Centralizado inferior), BorderStyle=1 (Outline)
+        # Atenção: Cores no ASS são invertidas BGR (Blue-Green-Red). Branco é FFFFFF.
+        style = (f"force_style='FontName=Arial,FontSize={f_size},"
+                 f"PrimaryColour={f_color},OutlineColour=&H00000000,"
+                 f"BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginV={f_margin}'")
+        
         filtros.append(f"subtitles='{srt_safe}':{style}")
     
     # Adiciona filtros se houver
@@ -167,13 +175,12 @@ def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, status_conta
         output_video
     ])
     
-    status_container.code(" ".join(cmd)) # Mostra comando para debug
+    status_container.code(" ".join(cmd)) 
     status_container.write("⚙️ Renderizando com FFmpeg...")
     
     try:
         process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
-        # Limpa temp
         if os.path.exists(concat_txt): os.remove(concat_txt)
         
         if process.returncode == 0:
@@ -199,12 +206,42 @@ with col1:
     st.info(f"Áudio: {'OK' if tem_aud else 'Pendente'}")
 with col2:
     st.info(f"Legendas: {'OK' if tem_leg and dados_leg else 'Não configurado'}")
+    if dados_leg:
+        st.caption(f"Total de linhas de legenda: {len(dados_leg)}")
 
 st.divider()
 
 if not (tem_img and tem_aud):
     st.error("Faltam imagens ou áudio.")
     st.stop()
+
+# --- CONFIGURAÇÃO VISUAL DAS LEGENDAS ---
+st.subheader("🛠️ Configuração de Legendas")
+with st.expander("Ajustar Tamanho e Posição", expanded=True):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        # Padrão reduzido para 12 (antes era 24)
+        font_size = st.slider("Tamanho da Fonte", 8, 40, 12, help="Se ficou gigante, diminua aqui.")
+    with c2:
+        # Posição vertical (quanto maior, mais alto na tela)
+        margin_v = st.slider("Altura (Margem Inferior)", 10, 300, 30, help="Distância da borda inferior.")
+    with c3:
+        cor_opcao = st.selectbox("Cor do Texto", ["Branco", "Amarelo", "Ciano"])
+    
+    # Mapa de cores ASS (BGR Hex com &H)
+    mapa_cores = {
+        "Branco": "&H00FFFFFF",
+        "Amarelo": "&H0000FFFF", # Azul=00, Verde=FF, Vermelho=FF -> Amarelo
+        "Ciano": "&H00FFFF00"
+    }
+    
+    font_config = {
+        "size": font_size,
+        "margin_v": margin_v,
+        "color": mapa_cores[cor_opcao]
+    }
+
+st.markdown("---")
 
 if st.button("🎬 Renderizar Vídeo Final", type="primary"):
     box = st.status("Preparando arquivos...", expanded=True)
@@ -217,17 +254,20 @@ if st.button("🎬 Renderizar Vídeo Final", type="primary"):
     path_imgs = progresso.get('imagens_paths', [])
     path_video = os.path.join(folder_video, f"video_{data_str}_{leitura['tipo'].replace(' ', '_')}.mp4")
     
-    # 2. Gera SRT temporário se houver legendas
+    # 2. Gera SRT temporário
     path_srt = None
     if tem_leg and dados_leg:
         box.write("📝 Criando arquivo de legendas (.srt)...")
         path_srt = os.path.join(folder_video, "temp_subs.srt")
-        criar_arquivo_srt(dados_leg, path_srt)
+        sucesso_srt = criar_arquivo_srt(dados_leg, path_srt)
+        if not sucesso_srt:
+            box.error("Erro ao gerar arquivo de legendas.")
+            st.stop()
     else:
-        box.warning("Sem legendas selecionadas. O vídeo será gerado sem texto.")
+        box.warning("Sem dados de legendas. O vídeo será gerado sem texto.")
 
     # 3. Renderiza
-    sucesso, msg = gerar_video_ffmpeg(path_imgs, path_audio, path_video, path_srt, box)
+    sucesso, msg = gerar_video_ffmpeg(path_imgs, path_audio, path_video, path_srt, font_config, box)
     
     # 4. Limpeza SRT
     if path_srt and os.path.exists(path_srt):
