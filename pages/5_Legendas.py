@@ -49,69 +49,96 @@ def get_audio_duration_wave(file_path):
         print(f"Erro ao ler WAV: {e}")
         return 0.0
 
-def split_into_segments(text, max_chars=80):
-    """
-    Quebra o texto em segmentos menores para caber na tela.
-    Tenta quebrar por pontuação ou por tamanho máximo.
-    """
-    # Remove quebras de linha extras e normaliza espaços
+def split_standard(text, max_chars=80):
+    """Quebra tradicional por pontuação (Frases longas)."""
     text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Divide primeiro por pontuação forte para garantir pausas lógicas
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    
     final_segments = []
     
     for sentence in sentences:
         if not sentence: continue
-        
-        # Se a frase for curta, adiciona direto
         if len(sentence) <= max_chars:
             final_segments.append(sentence)
         else:
-            # Se for longa, quebra por vírgulas ou espaço
             parts = re.split(r'(?<=[,;])\s+', sentence)
-            current_part = ""
-            
+            current = ""
             for part in parts:
-                if len(current_part) + len(part) < max_chars:
-                    current_part += part + " "
+                if len(current) + len(part) < max_chars:
+                    current += part + " "
                 else:
-                    if current_part:
-                        final_segments.append(current_part.strip())
-                    current_part = part + " "
-            
-            if current_part:
-                final_segments.append(current_part.strip())
-                
+                    if current: final_segments.append(current.strip())
+                    current = part + " "
+            if current: final_segments.append(current.strip())
     return final_segments
 
-def gerar_legendas_proporcionais(texto_completo, audio_path):
+def split_dynamic(text, words_per_chunk=4):
     """
-    Gera legendas baseadas na duração proporcional dos caracteres.
-    Não é perfeito como IA (Whisper), mas garante que todo texto apareça.
+    Estilo Dinâmico/TikTok: Quebra por contagem de palavras.
+    Gera blocos pequenos para leitura rápida.
+    """
+    text = re.sub(r'\s+', ' ', text).strip()
+    words = text.split()
+    segments = []
+    current_chunk = []
+    
+    for word in words:
+        current_chunk.append(word)
+        
+        # Quebra se atingir o limite de palavras OU se tiver pontuação forte
+        has_punctuation = word.endswith(('.', '?', '!', ':', ';'))
+        
+        if len(current_chunk) >= words_per_chunk or (has_punctuation and len(current_chunk) > 2):
+            segments.append(" ".join(current_chunk))
+            current_chunk = []
+            
+    if current_chunk:
+        segments.append(" ".join(current_chunk))
+        
+    return segments
+
+def split_karaoke(text):
+    """
+    Estilo Karaokê: 1 ou 2 palavras por vez no máximo.
+    """
+    text = re.sub(r'\s+', ' ', text).strip()
+    words = text.split()
+    segments = []
+    
+    # Agrupa de 2 em 2 palavras para não ficar frenético demais, 
+    # mas ainda muito rápido
+    for i in range(0, len(words), 2):
+        chunk = words[i:i+2]
+        segments.append(" ".join(chunk))
+        
+    return segments
+
+def gerar_legendas_proporcionais(texto_completo, audio_path, modo="dynamic"):
+    """
+    Gera legendas proporcionais com base no modo escolhido.
     """
     duration = get_audio_duration_wave(audio_path)
-    if duration <= 0:
-        return []
+    if duration <= 0: return []
 
-    # 1. Segmenta o texto em linhas legíveis
-    segmentos = split_into_segments(texto_completo, max_chars=90)
+    # Seleciona o algoritmo de quebra
+    if modo == "standard":
+        segmentos = split_standard(texto_completo, max_chars=80)
+    elif modo == "karaoke":
+        segmentos = split_karaoke(texto_completo)
+    else: # dynamic (default)
+        segmentos = split_dynamic(texto_completo, words_per_chunk=4)
     
-    # 2. Calcula total de caracteres (ignorando espaços vazios excessivos)
-    total_chars = sum(len(seg) for seg in segmentos)
-    if total_chars == 0: return []
+    # Calcula total de caracteres (peso visual)
+    total_len = sum(len(seg) for seg in segmentos)
+    if total_len == 0: return []
     
-    # 3. Distribui o tempo
     legendas = []
     current_time = 0.0
     
     for seg in segmentos:
-        # Tempo proporcional ao tamanho do texto
-        seg_duration = (len(seg) / total_chars) * duration
-        
-        # Ajuste fino: garante mínimo de 1.5s para leitura se possível
-        # (Isso pode distorcer o final, então usamos com cuidado ou apenas o proporcional puro)
+        # Peso do segmento no tempo total
+        # Adiciona um pequeno "peso base" para segmentos muito curtos não piscarem rápido demais
+        weight = len(seg)
+        seg_duration = (weight / total_len) * duration
         
         legendas.append({
             "start": current_time,
@@ -141,20 +168,33 @@ col_esq, col_dir = st.columns([1, 1])
 with col_esq:
     st.subheader("Configuração")
     
-    # Recupera o texto completo usado no áudio
     texto_roteiro = progresso.get('texto_roteiro_completo', '')
     if not texto_roteiro:
-        # Fallback se não tiver o completo salvo
         b1 = progresso.get('bloco_leitura', '')
         b2 = progresso.get('bloco_reflexao', '')
         b3 = progresso.get('bloco_aplicacao', '')
         b4 = progresso.get('bloco_oracao', '')
         texto_roteiro = f"{b1} {b2} {b3} {b4}"
 
-    st.text_area("Texto Base para Legenda (Somente Leitura)", value=texto_roteiro, height=300, disabled=True)
+    st.text_area("Texto Base (Leitura)", value=texto_roteiro, height=300, disabled=True)
     
-    estilo = st.selectbox("Algoritmo de Sincronia", ["Proporcional (Padrão)", "Estilo TikTok (Rápido)"])
-    cor = st.color_picker("Cor de Referência", "#FFFFFF", help="A cor final é definida na renderização.")
+    # NOVO SELETOR DE ESTILO
+    st.markdown("### Estilo da Legenda")
+    estilo_selecionado = st.radio(
+        "Escolha a dinâmica:",
+        ["🚀 Dinâmico (Reels/TikTok - Recomendado)", "🔥 Karaokê (Palavra por Palavra)", "🟢 Padrão (Frases Completas)"],
+        index=0
+    )
+    
+    # Mapeia a escolha para a string interna
+    modo_map = {
+        "🚀 Dinâmico (Reels/TikTok - Recomendado)": "dynamic",
+        "🔥 Karaokê (Palavra por Palavra)": "karaoke",
+        "🟢 Padrão (Frases Completas)": "standard"
+    }
+    modo_interno = modo_map[estilo_selecionado]
+    
+    cor = st.color_picker("Cor de Referência", "#FFFFFF", help="A cor real será definida na renderização.")
 
 with col_dir:
     st.subheader("Gerar")
@@ -165,29 +205,32 @@ with col_dir:
         if not audio_path or not os.path.exists(audio_path):
             st.error("Arquivo de áudio não encontrado no disco.")
         else:
-            with st.spinner("Calculando tempos e segmentando texto..."):
-                # GERAÇÃO REAL AGORA
-                legendas_reais = gerar_legendas_proporcionais(texto_roteiro, audio_path)
+            with st.spinner(f"Gerando legendas no modo {modo_interno.upper()}..."):
+                
+                legendas_reais = gerar_legendas_proporcionais(texto_roteiro, audio_path, modo=modo_interno)
                 
                 if legendas_reais:
-                    # SALVA NO BANCO
                     progresso['legendas_dados'] = legendas_reais
                     progresso['legendas'] = True
-                    progresso['legenda_config'] = {"ativar": True, "cor": cor, "estilo": estilo}
+                    progresso['legenda_config'] = {"ativar": True, "cor": cor, "estilo": modo_interno}
                     
                     db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
-                    st.success(f"Sucesso! {len(legendas_reais)} linhas de legenda geradas.")
+                    st.success(f"Sucesso! {len(legendas_reais)} segmentos gerados.")
                     st.rerun()
                 else:
-                    st.error("Falha ao gerar legendas. Verifique se o áudio e o texto estão válidos.")
+                    st.error("Falha ao gerar legendas.")
 
-    # Visualização dos dados gerados
+    # Visualização
     if progresso.get('legendas') and progresso.get('legendas_dados'):
         dados = progresso['legendas_dados']
-        st.success(f"✅ Legendas prontas ({len(dados)} segmentos)")
+        st.success(f"✅ Legendas prontas ({len(dados)} blocos)")
         
-        with st.expander("Ver tabela de tempos"):
-            st.dataframe(dados)
+        with st.expander("🔍 Pré-visualizar Segmentação"):
+            # Mostra apenas texto para facilitar leitura
+            for item in dados[:10]: # Mostra só os 10 primeiros
+                st.text(f"[{item['start']:.2f}s - {item['end']:.2f}s]: {item['text']}")
+            if len(dados) > 10:
+                st.text(f"... e mais {len(dados)-10} linhas.")
 
 # Navegação Final
 st.divider()
