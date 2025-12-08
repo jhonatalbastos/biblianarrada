@@ -1,14 +1,13 @@
 import streamlit as st
-import sys
 import os
+import sys
+import datetime
 import requests
-import random
-from datetime import datetime
 from PIL import Image
-from urllib.parse import quote
+from io import BytesIO
 
 # ---------------------------------------------------------------------
-# 1. CONFIGURAÇÃO DE DIRETÓRIOS E IMPORTAÇÕES
+# 1. CONFIGURAÇÃO
 # ---------------------------------------------------------------------
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
@@ -17,16 +16,14 @@ sys.path.append(parent_dir)
 try:
     import modules.database as db
 except ImportError:
-    st.error("🚨 Erro: Não foi possível importar o módulo de banco de dados.")
+    st.error("🚨 Erro: Módulo de banco de dados não encontrado.")
     st.stop()
 
-# ---------------------------------------------------------------------
-# 2. CONFIGURAÇÃO DA PÁGINA
-# ---------------------------------------------------------------------
-st.set_page_config(page_title="2. Imagens Visuais", layout="wide")
+st.set_page_config(page_title="2. Criar Imagens", layout="wide")
+st.session_state['current_page_name'] = 'pages/2_Imagens.py'
 
 # ---------------------------------------------------------------------
-# 3. RECUPERAÇÃO DE ESTADO
+# 2. RECUPERAÇÃO DE ESTADO
 # ---------------------------------------------------------------------
 if 'leitura_atual' not in st.session_state:
     st.warning("⚠️ Nenhuma leitura selecionada.")
@@ -35,183 +32,110 @@ if 'leitura_atual' not in st.session_state:
     st.stop()
 
 leitura = st.session_state['leitura_atual']
-data_str = st.session_state.get('data_atual_str', datetime.today().strftime('%Y-%m-%d'))
+data_str = st.session_state.get('data_atual_str', datetime.date.today().strftime('%Y-%m-%d'))
 chave_progresso = f"{data_str}-{leitura['tipo']}"
 
-# Carrega status atual do banco
-progresso, em_producao = db.load_status(chave_progresso)
+progresso, _ = db.load_status(chave_progresso)
 
-# Recupera os prompts gerados no passo anterior
-prompts_salvos = progresso.get('prompts_imagem', {})
+# Recupera prompts do passo anterior
+prompts = progresso.get('prompts_imagem', {})
 
 # ---------------------------------------------------------------------
-# 4. FUNÇÕES UTILITÁRIAS
+# 3. FUNÇÕES
 # ---------------------------------------------------------------------
-
-def obter_pasta_destino():
-    """Retorna o caminho da pasta onde as imagens serão salvas."""
-    pasta = os.path.join(parent_dir, "generated_images", data_str, leitura['tipo'])
-    os.makedirs(pasta, exist_ok=True)
-    return pasta
-
-def salvar_imagem_local(url_imagem, nome_arquivo):
-    """Baixa a imagem da URL (IA) e salva localmente."""
+def gerar_imagem_placeholder(texto, index):
+    """Gera uma imagem de placeholder usando serviço online (Lorem Picsum/Placehold)."""
+    # Em produção, substitua por DALL-E, Stable Diffusion, etc.
     try:
-        pasta_destino = obter_pasta_destino()
-        caminho_completo = os.path.join(pasta_destino, nome_arquivo)
-        
-        response = requests.get(url_imagem)
-        if response.status_code == 200:
-            with open(caminho_completo, 'wb') as f:
-                f.write(response.content)
-            return caminho_completo
-        else:
-            st.error(f"Erro ao baixar imagem: Status {response.status_code}")
-            return None
-    except Exception as e:
-        st.error(f"Erro ao salvar imagem: {e}")
+        url = f"https://placehold.co/1080x1920/202020/FFF.png?text=Cena+{index+1}\n{texto[:20]}..."
+        resp = requests.get(url)
+        if resp.status_code == 200:
+            return BytesIO(resp.content)
+    except:
         return None
-
-def salvar_upload_local(uploaded_file, nome_arquivo):
-    """
-    Salva uma imagem enviada pelo usuário via Upload.
-    Converte para PNG para evitar erros de extensão.
-    """
-    try:
-        pasta_destino = obter_pasta_destino()
-        caminho_completo = os.path.join(pasta_destino, nome_arquivo)
-        
-        # Abre a imagem usando PIL para garantir formato
-        image = Image.open(uploaded_file)
-        
-        # Salva forçando formato PNG
-        image.save(caminho_completo, format="PNG")
-        
-        return caminho_completo
-    except Exception as e:
-        st.error(f"Erro ao salvar upload: {e}")
-        return None
-
-def gerar_imagem_pollinations(prompt):
-    """Gera imagem usando Pollinations.ai (Gratuito e Rápido)."""
-    try:
-        prompt_clean = prompt.replace("\n", " ").strip()
-        prompt_encoded = quote(prompt_clean)
-        seed = random.randint(0, 999999)
-        url = f"https://pollinations.ai/p/{prompt_encoded}?width=720&height=1280&seed={seed}&model=flux&nologo=true"
-        return url
-    except Exception as e:
-        st.error(f"Erro na construção da URL Pollinations: {e}")
-        return None
+    return None
 
 # ---------------------------------------------------------------------
-# 5. INTERFACE
+# 4. INTERFACE
 # ---------------------------------------------------------------------
+st.title("🎨 Passo 2: Geração de Imagens")
+st.caption(f"Leitura: {leitura['titulo']}")
 
-st.title("🎨 Passo 2: Criação de Imagens")
-
-# Header
-cols_header = st.columns([3, 1])
-with cols_header[0]:
-    st.markdown(f"**Leitura:** {leitura['titulo']}")
-    st.caption("Gerador: Pollinations AI | Upload Próprio | Formato: 9:16")
-with cols_header[1]:
-    if st.button("🔙 Voltar ao Roteiro"):
-        st.switch_page("pages/1_Roteiro_Viral.py")
+# Navegação Superior
+if st.button("🔙 Voltar para Roteiro"):
+    st.switch_page("pages/1_Roteiro_Viral.py")
 
 st.divider()
 
-if not prompts_salvos:
-    st.warning("⚠️ Não foram encontrados prompts de imagem. Volte ao Passo 1 e gere o roteiro com IA.")
+if not prompts:
+    st.error("❌ Nenhum prompt de imagem encontrado. Gere o roteiro primeiro.")
     st.stop()
 
-if 'caminhos_imagens' not in progresso:
-    progresso['caminhos_imagens'] = {}
+col_esq, col_dir = st.columns([1, 1])
 
-# --- CRIAÇÃO DAS ABAS PARA OS 4 BLOCOS ---
-tab1, tab2, tab3, tab4 = st.tabs(["1. Leitura", "2. Reflexão", "3. Aplicação", "4. Oração"])
+# --- COLUNA 1: PROMPTS ---
+with col_esq:
+    st.subheader("📝 Prompts (IA)")
+    
+    p1 = st.text_area("Prompt Cena 1", value=prompts.get('bloco_1', ''), height=100)
+    p2 = st.text_area("Prompt Cena 2", value=prompts.get('bloco_2', ''), height=100)
+    p3 = st.text_area("Prompt Cena 3", value=prompts.get('bloco_3', ''), height=100)
+    p4 = st.text_area("Prompt Cena 4", value=prompts.get('bloco_4', ''), height=100)
+    
+    if st.button("🔄 Atualizar Prompts no Banco"):
+        progresso['prompts_imagem'] = {
+            "bloco_1": p1, "bloco_2": p2, "bloco_3": p3, "bloco_4": p4
+        }
+        db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
+        st.success("Prompts atualizados!")
 
-def renderizar_aba_imagem(tab_obj, chave_bloco, titulo_bloco):
-    with tab_obj:
-        st.subheader(f"🖼️ Imagem: {titulo_bloco}")
-        col_txt, col_img = st.columns([1, 1])
-        
-        with col_txt:
-            # 1. Opção de Gerar com IA
-            st.markdown("#### 🤖 Gerar com IA")
-            prompt_padrao = prompts_salvos.get(chave_bloco, "")
-            prompt_editavel = st.text_area(
-                "Prompt (Inglês):", 
-                value=prompt_padrao, 
-                height=100,
-                key=f"txt_{chave_bloco}"
-            )
+# --- COLUNA 2: IMAGENS ---
+with col_dir:
+    st.subheader("🖼️ Resultados")
+    
+    # Verifica se já existem imagens salvas
+    imagens_salvas = progresso.get('imagens_paths', [])
+    
+    if st.button("✨ Gerar Todas as Imagens (Simulação)", type="primary"):
+        with st.spinner("Gerando imagens..."):
+            novas_imagens = []
+            folder = os.path.join(parent_dir, "data", "imagens")
+            os.makedirs(folder, exist_ok=True)
             
-            if st.button(f"✨ Gerar Imagem (Turbo)", key=f"btn_{chave_bloco}", type="primary"):
-                with st.spinner("Gerando imagem via Pollinations..."):
-                    url_gerada = gerar_imagem_pollinations(prompt_editavel)
-                    if url_gerada:
-                        nome_arquivo = f"{chave_bloco}.png"
-                        caminho_salvo = salvar_imagem_local(url_gerada, nome_arquivo)
-                        if caminho_salvo:
-                            progresso['caminhos_imagens'][chave_bloco] = caminho_salvo
-                            progresso['prompts_imagem'][chave_bloco] = prompt_editavel
-                            db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-                            st.success("Imagem IA gerada e salva!")
-                            st.rerun()
+            prompts_lista = [p1, p2, p3, p4]
             
-            st.markdown("---")
+            for i, p in enumerate(prompts_lista):
+                img_io = gerar_imagem_placeholder(p, i)
+                if img_io:
+                    filename = f"img_{data_str}_{i+1}.png"
+                    path = os.path.join(folder, filename)
+                    # Salva no disco
+                    with open(path, "wb") as f:
+                        f.write(img_io.getbuffer())
+                    novas_imagens.append(path)
             
-            # 2. Opção de Upload Próprio
-            st.markdown("#### 📤 Ou faça Upload")
-            uploaded_file = st.file_uploader(
-                "Envie sua própria imagem (Prefira Vertical 9:16)", 
-                type=['png', 'jpg', 'jpeg'],
-                key=f"up_{chave_bloco}"
-            )
+            # SALVA NO BANCO (CRÍTICO PARA O PASSO 6)
+            progresso['imagens_paths'] = novas_imagens
+            progresso['imagens'] = True  # <--- A CHAVE QUE O PASSO 6 PROCURA
             
-            if uploaded_file is not None:
-                # Mostra preview imediato do que está na memória (antes de salvar)
-                st.image(uploaded_file, caption="Pré-visualização do Upload", width=150)
-                
-                if st.button(f"💾 Confirmar e Salvar Upload", key=f"btn_up_{chave_bloco}"):
-                    nome_arquivo = f"{chave_bloco}.png"
-                    caminho_salvo = salvar_upload_local(uploaded_file, nome_arquivo)
-                    if caminho_salvo:
-                        progresso['caminhos_imagens'][chave_bloco] = caminho_salvo
-                        db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-                        st.success("Imagem enviada salva com sucesso!")
-                        st.rerun()
-
-        with col_img:
-            # Exibe a imagem que está salva no sistema (Disco)
-            caminho_existente = progresso['caminhos_imagens'].get(chave_bloco)
-            if caminho_existente and os.path.exists(caminho_existente):
-                # Usamos Image.open para garantir que o Streamlit carregue o arquivo fresco
-                image = Image.open(caminho_existente)
-                st.image(image, caption=f"Imagem Definida - {titulo_bloco}", use_container_width=True)
-            else:
-                st.info("Nenhuma imagem definida.")
-                st.markdown("""<div style="border: 2px dashed #ccc; padding: 100px; text-align: center; color: #ccc;">Visualização 9:16</div>""", unsafe_allow_html=True)
-
-renderizar_aba_imagem(tab1, "bloco_1", "Bloco 1 (Leitura)")
-renderizar_aba_imagem(tab2, "bloco_2", "Bloco 2 (Reflexão)")
-renderizar_aba_imagem(tab3, "bloco_3", "Bloco 3 (Aplicação)")
-renderizar_aba_imagem(tab4, "bloco_4", "Bloco 4 (Oração)")
-
-st.divider()
-
-imgs = progresso.get('caminhos_imagens', {})
-tem_todas = all(k in imgs for k in ["bloco_1", "bloco_2", "bloco_3", "bloco_4"])
-
-col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
-
-with col_nav_3:
-    if tem_todas:
-        if st.button("Próximo: Gerar Áudios ➡️", type="primary", use_container_width=True):
-            progresso['imagens_prontas'] = True
             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-            # Apontando corretamente para o arquivo que criamos anteriormente
+            st.success("Imagens geradas e salvas!")
+            st.rerun()
+
+    # Exibe Galeria
+    if imagens_salvas:
+        cols = st.columns(2)
+        for i, path in enumerate(imagens_salvas):
+            if os.path.exists(path):
+                with cols[i % 2]:
+                    st.image(path, caption=f"Cena {i+1}")
+            else:
+                st.warning(f"Imagem {i+1} não encontrada no disco.")
+                
+# Navegação Final
+st.divider()
+_, _, col_nav = st.columns([1, 2, 1])
+with col_nav:
+    if progresso.get('imagens'):
+        if st.button("Próximo: Áudio ➡️", type="primary", use_container_width=True):
             st.switch_page("pages/3_Audio_TTS.py")
-    else:
-        st.button("Próximo ➡️", disabled=True, use_container_width=True, help="Defina as 4 imagens para continuar.")
