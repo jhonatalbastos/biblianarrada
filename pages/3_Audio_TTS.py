@@ -54,35 +54,49 @@ if not texto_roteiro:
     texto_roteiro = f"{b1}\n\n{b2}\n\n{b3}\n\n{b4}".strip()
 
 # ---------------------------------------------------------------------
-# 4. FUNÇÃO DE GERAÇÃO PIPER TTS (CORRIGIDA)
+# 4. FUNÇÃO DE GERAÇÃO PIPER TTS (MÉTODO RAW STREAM)
 # ---------------------------------------------------------------------
 def gerar_audio_piper(texto, caminho_saida):
-    """Gera áudio usando o modelo local do Piper."""
+    """Gera áudio usando o modelo local do Piper e escreve os bytes manualmente."""
     
-    # Caminho do modelo (ajuste conforme a estrutura da sua pasta)
+    # Caminho do modelo
     model_path = os.path.join(parent_dir, "piper_models", "pt_BR-faber-medium.onnx")
+    config_path = os.path.join(parent_dir, "piper_models", "pt_BR-faber-medium.onnx.json")
     
     if not os.path.exists(model_path):
         st.error(f"❌ Modelo de voz não encontrado em: {model_path}")
-        st.info("Verifique se a pasta 'piper_models' e o arquivo .onnx existem na raiz do projeto.")
+        return False
+        
+    if not os.path.exists(config_path):
+        st.error(f"❌ Arquivo de configuração (.json) não encontrado em: {config_path}")
         return False
 
     try:
         # Carrega a voz
         voice = PiperVoice.load(model_path)
         
-        # Sintetiza para arquivo WAV com configurações explícitas
+        # Abre o arquivo WAV para escrita
         with wave.open(caminho_saida, "wb") as wav_file:
-            # CORREÇÃO: Define os parâmetros antes de escrever
-            wav_file.setnchannels(1)          # Mono
-            wav_file.setsampwidth(2)          # 16-bit (2 bytes)
-            wav_file.setframerate(voice.config.sample_rate) # Taxa do modelo
+            # Configura o cabeçalho do WAV explicitamente
+            wav_file.setnchannels(1)                # Mono
+            wav_file.setsampwidth(2)                # 16-bit
+            wav_file.setframerate(voice.config.sample_rate) # Taxa do modelo (ex: 22050Hz)
             
-            voice.synthesize(texto, wav_file)
+            # Gera o áudio em fluxo (stream) e grava os pedaços
+            # Isso evita problemas de compatibilidade com o objeto de arquivo
+            for audio_bytes in voice.synthesize_stream_raw(texto):
+                wav_file.writeframes(audio_bytes)
+        
+        # Verificação final: se o arquivo for muito pequeno (só cabeçalho), falhou
+        tamanho_arquivo = os.path.getsize(caminho_saida)
+        if tamanho_arquivo <= 44:
+            st.error("⚠️ O arquivo de áudio foi criado mas está vazio (0 bytes de som). Tente um texto menor ou verifique a biblioteca.")
+            return False
             
         return True
+        
     except Exception as e:
-        st.error(f"❌ Erro ao processar Piper TTS: {e}")
+        st.error(f"❌ Erro crítico ao processar Piper TTS: {e}")
         return False
 
 # ---------------------------------------------------------------------
@@ -130,7 +144,7 @@ with col_dir:
     st.markdown("""
     **Motor de Áudio:** Piper TTS (Local)  
     **Voz Padrão:** `Faber Medium (pt-BR)`  
-    *Esta voz roda localmente no servidor, garantindo rapidez e privacidade.*
+    *O áudio é gerado localmente via CPU.*
     """)
     
     st.divider()
@@ -169,13 +183,22 @@ with col_dir:
     if progresso.get('audio') and progresso.get('audio_path'):
         audio_file_path = progresso['audio_path']
         
-        st.success("✅ Áudio disponível")
-        st.write(f"📂 {os.path.basename(audio_file_path)}")
+        st.success("✅ Áudio Gerado")
         
+        # Exibe player de áudio
         if os.path.exists(audio_file_path):
             st.audio(audio_file_path, format="audio/wav")
+            
+            # Botão de download opcional
+            with open(audio_file_path, "rb") as file:
+                btn = st.download_button(
+                    label="📥 Baixar Áudio WAV",
+                    data=file,
+                    file_name=nome_arquivo,
+                    mime="audio/wav"
+                )
         else:
-            st.error("⚠️ O arquivo de áudio consta no banco, mas não foi encontrado no disco.")
+            st.error(f"⚠️ Arquivo não encontrado no disco: {audio_file_path}")
 
 # ---------------------------------------------------------------------
 # 6. NAVEGAÇÃO
