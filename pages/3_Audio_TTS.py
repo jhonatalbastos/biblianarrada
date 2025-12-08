@@ -54,10 +54,10 @@ if not texto_roteiro:
     texto_roteiro = f"{b1}\n\n{b2}\n\n{b3}\n\n{b4}".strip()
 
 # ---------------------------------------------------------------------
-# 4. FUNÇÃO DE GERAÇÃO PIPER TTS (MÉTODO RAW STREAM)
+# 4. FUNÇÃO DE GERAÇÃO PIPER TTS (CORRIGIDO FINAL)
 # ---------------------------------------------------------------------
 def gerar_audio_piper(texto, caminho_saida):
-    """Gera áudio usando o modelo local do Piper e escreve os bytes manualmente."""
+    """Gera áudio usando o modelo local do Piper (Escrevendo direto em binário)."""
     
     # Caminho do modelo
     model_path = os.path.join(parent_dir, "piper_models", "pt_BR-faber-medium.onnx")
@@ -75,26 +75,22 @@ def gerar_audio_piper(texto, caminho_saida):
         # Carrega a voz
         voice = PiperVoice.load(model_path)
         
-        # Abre o arquivo WAV para escrita
-        with wave.open(caminho_saida, "wb") as wav_file:
-            # Configura o cabeçalho do WAV explicitamente
-            wav_file.setnchannels(1)                # Mono
-            wav_file.setsampwidth(2)                # 16-bit
-            wav_file.setframerate(voice.config.sample_rate) # Taxa do modelo (ex: 22050Hz)
-            
-            # Gera o áudio em fluxo (stream) e grava os pedaços
-            # Isso evita problemas de compatibilidade com o objeto de arquivo
-            for audio_bytes in voice.synthesize_stream_raw(texto):
-                wav_file.writeframes(audio_bytes)
+        # CORREÇÃO PRINCIPAL:
+        # O Piper espera um objeto de arquivo binário padrão, não um objeto wave.
+        # Ele mesmo escreve os headers do WAV.
+        with open(caminho_saida, "wb") as arquivo_wav:
+            voice.synthesize(texto, arquivo_wav)
         
         # Verificação final: se o arquivo for muito pequeno (só cabeçalho), falhou
-        tamanho_arquivo = os.path.getsize(caminho_saida)
-        if tamanho_arquivo <= 44:
-            st.error("⚠️ O arquivo de áudio foi criado mas está vazio (0 bytes de som). Tente um texto menor ou verifique a biblioteca.")
+        if os.path.exists(caminho_saida):
+            tamanho_arquivo = os.path.getsize(caminho_saida)
+            if tamanho_arquivo <= 44: # 44 bytes é apenas o cabeçalho WAV
+                st.error("⚠️ O arquivo de áudio foi criado mas parece vazio. Verifique se o texto não está em branco.")
+                return False
+            return True
+        else:
             return False
             
-        return True
-        
     except Exception as e:
         st.error(f"❌ Erro crítico ao processar Piper TTS: {e}")
         return False
@@ -164,20 +160,25 @@ with col_dir:
         
         texto_para_falar = texto_editado if 'texto_editado' in locals() else texto_roteiro
         
-        with st.spinner("🔊 Sintetizando voz (isso pode levar alguns segundos)..."):
-            sucesso = gerar_audio_piper(texto_para_falar, caminho_final_arquivo)
-            
-            if sucesso:
-                # Salva status
-                progresso['audio'] = True
-                progresso['audio_path'] = caminho_final_arquivo
-                progresso['voz_usada'] = "Piper - Faber Medium"
+        # Limpeza básica para evitar erros no TTS
+        texto_para_falar = texto_para_falar.strip()
+        if not texto_para_falar:
+            st.error("O texto está vazio!")
+        else:
+            with st.spinner("🔊 Sintetizando voz (isso pode levar alguns segundos)..."):
+                sucesso = gerar_audio_piper(texto_para_falar, caminho_final_arquivo)
                 
-                # Código da etapa 3 = Audio
-                db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 3)
-                
-                st.success("Áudio gerado com sucesso!")
-                st.rerun()
+                if sucesso:
+                    # Salva status
+                    progresso['audio'] = True
+                    progresso['audio_path'] = caminho_final_arquivo
+                    progresso['voz_usada'] = "Piper - Faber Medium"
+                    
+                    # Código da etapa 3 = Audio
+                    db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 3)
+                    
+                    st.success("Áudio gerado com sucesso!")
+                    st.rerun()
 
     # Se já tiver áudio
     if progresso.get('audio') and progresso.get('audio_path'):
@@ -189,9 +190,9 @@ with col_dir:
         if os.path.exists(audio_file_path):
             st.audio(audio_file_path, format="audio/wav")
             
-            # Botão de download opcional
+            # Botão de download
             with open(audio_file_path, "rb") as file:
-                btn = st.download_button(
+                st.download_button(
                     label="📥 Baixar Áudio WAV",
                     data=file,
                     file_name=nome_arquivo,
