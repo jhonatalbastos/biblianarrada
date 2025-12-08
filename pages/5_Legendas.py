@@ -55,16 +55,14 @@ def get_audio_duration(file_path):
         except:
             return 0.0
 
-def split_dynamic_smart(text, max_words=4):
+def split_dynamic_turbo(text, max_words=3):
     """
-    Algoritmo Inteligente para Legendas Dinâmicas (Estilo TikTok).
-    Evita deixar palavras órfãs e respeita pontuação.
+    Algoritmo Turbo para TikTok.
+    Quebra o texto em blocos muito curtos (máx 3 palavras) para dar dinamismo.
     """
-    # Remove espaços duplos e quebras de linha
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # 1. Separa por pontuação forte primeiro para criar "frases lógicas"
-    # Mantém a pontuação junto com a palavra
+    # Divide por pontuação forte
     sentences = re.split(r'(?<=[.!?])\s+', text)
     
     final_segments = []
@@ -77,22 +75,8 @@ def split_dynamic_smart(text, max_words=4):
         
         for word in words:
             chunk.append(word)
-            
-            # Condições de quebra:
-            # 1. Pontuação final (. ! ?) -> Quebra imediata
-            # 2. Pontuação de pausa (, ; :) -> Quebra se já tivermos algumas palavras
-            # 3. Limite de palavras atingido
-            
-            is_end = word.endswith(('.', '!', '?'))
-            is_pause = word.endswith((',', ':', ';'))
-            
-            if is_end:
-                final_segments.append(" ".join(chunk))
-                chunk = []
-            elif is_pause and len(chunk) >= 2:
-                final_segments.append(" ".join(chunk))
-                chunk = []
-            elif len(chunk) >= max_words:
+            # Quebra se atingir 3 palavras ou se tiver pontuação
+            if len(chunk) >= max_words or word.endswith(('.', '!', '?', ',', ':', ';')):
                 final_segments.append(" ".join(chunk))
                 chunk = []
         
@@ -106,20 +90,16 @@ def gerar_legendas(texto_completo, audio_path):
     if duration <= 0: return [], 0
     
     # Segmenta
-    segmentos = split_dynamic_smart(texto_completo, max_words=4)
+    segmentos = split_dynamic_turbo(texto_completo, max_words=3)
     
-    # Calcula peso (tamanho do texto)
     total_len = sum(len(seg) for seg in segmentos)
     if total_len == 0: return [], duration
     
     legendas = []
     current_time = 0.0
     
-    # Distribuição Proporcional
     for seg in segmentos:
         weight = len(seg)
-        # Regra de 3: Se texto total tem X chars e dura Y seg, 
-        # segmento com Z chars dura (Z/X)*Y
         seg_duration = (weight / total_len) * duration
         
         legendas.append({
@@ -152,41 +132,54 @@ duracao_audio = get_audio_duration(audio_path)
 # --- COLUNA DE STATUS ---
 col_info, col_reset = st.columns([3, 1])
 with col_info:
-    st.info(f"🔊 Duração do Áudio Detectada: **{duracao_audio:.1f} segundos**")
+    st.info(f"🔊 Áudio Detectado: **{duracao_audio:.1f} segundos**")
 with col_reset:
-    if st.button("🔄 Forçar Recarga do Texto Completo"):
-        # Reconstrói o texto a partir dos blocos originais
-        b1 = progresso.get('bloco_leitura', '')
-        b2 = progresso.get('bloco_reflexao', '')
-        b3 = progresso.get('bloco_aplicacao', '')
-        b4 = progresso.get('bloco_oracao', '')
-        texto_completo_reset = f"{b1}\n{b2}\n{b3}\n{b4}".strip()
-        
-        # Salva na sessão e força atualização
-        st.session_state['editor_legendas'] = texto_completo_reset
-        progresso['texto_roteiro_completo'] = texto_completo_reset
+    if st.button("🗑️ Limpar Legendas Antigas", type="secondary"):
+        progresso['legendas'] = False
+        progresso['legendas_dados'] = []
         db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
-        st.success("Texto recarregado!")
+        st.success("Limpo! Recarregando...")
         st.rerun()
 
+st.divider()
+
 # --- EDITOR DE TEXTO ---
-st.subheader("1. Texto para Sincronia")
-st.warning("⚠️ Importante: O texto abaixo deve ser IDÊNTICO ao que é falado no áudio. Se estiver faltando partes, a legenda ficará lenta.")
+st.subheader("1. Texto para Sincronia (Obrigatório)")
 
-# Pega texto inicial
+# Tenta recuperar o texto completo. Se falhar, tenta reconstruir.
 texto_banco = progresso.get('texto_roteiro_completo', '')
-if 'editor_legendas' not in st.session_state:
-    st.session_state['editor_legendas'] = texto_banco
+if not texto_banco or len(texto_banco) < 50:
+     # Tenta montar o texto novamente com os blocos
+    b1 = progresso.get('bloco_leitura', '')
+    b2 = progresso.get('bloco_reflexao', '')
+    b3 = progresso.get('bloco_aplicacao', '')
+    b4 = progresso.get('bloco_oracao', '')
+    texto_banco = f"{b1}\n{b2}\n{b3}\n{b4}".strip()
 
+# Caixa de edição
 texto_final = st.text_area(
-    "Edite o texto aqui se necessário:",
-    value=st.session_state['editor_legendas'],
-    height=300,
-    key='editor_legendas'
+    "Verifique se o texto abaixo é o roteiro COMPLETO. Se estiver curto, cole o texto certo aqui:",
+    value=texto_banco,
+    height=400
 )
 
-# Mostra contagem de caracteres para debug
-st.caption(f"Tamanho do texto: {len(texto_final)} caracteres.")
+chars_count = len(texto_final)
+st.caption(f"Tamanho do texto: {chars_count} caracteres.")
+
+if chars_count < 100:
+    st.error("🚨 **ERRO: TEXTO MUITO CURTO!**")
+    st.markdown("""
+    O sistema detectou que você tem pouco texto (provavelmente apenas o título). 
+    Se você gerar legendas agora, elas ficarão paradas por 40 segundos.
+    
+    **Solução:**
+    1. Vá na página **1. Roteiro Viral**.
+    2. Copie todo o texto gerado.
+    3. Volte aqui e **cole na caixa acima**.
+    """)
+    bloquear_botao = True
+else:
+    bloquear_botao = False
 
 st.divider()
 
@@ -195,47 +188,45 @@ c1, c2 = st.columns([1, 1])
 
 with c1:
     st.subheader("2. Estilo")
-    cor = st.color_picker("Cor de Referência (Apenas Visualização)", "#FFFFFF")
-    st.info("O estilo final (fonte, tamanho, cor) é aplicado na Renderização (Passo 6).")
+    st.success("Modo Turbo (TikTok/Reels)")
+    st.caption("Legendas rápidas (3 palavras por vez).")
 
 with c2:
     st.subheader("3. Processar")
-    if st.button("⚡ Gerar Legendas Agora", type="primary"):
-        if len(texto_final) < 50:
-            st.error("O texto parece muito curto! Clique em 'Forçar Recarga' lá em cima.")
-        else:
-            with st.spinner("Sincronizando..."):
-                legendas, _ = gerar_legendas(texto_final, audio_path)
+    if st.button("⚡ Gerar Legendas (Sincronizar)", type="primary", disabled=bloquear_botao):
+        with st.spinner("Sincronizando..."):
+            # Salva o texto que o usuário colou para não perder
+            progresso['texto_roteiro_completo'] = texto_final
+            
+            legendas, duracao = gerar_legendas(texto_final, audio_path)
+            
+            if legendas:
+                progresso['legendas_dados'] = legendas
+                progresso['legendas'] = True
+                progresso['legenda_config'] = {"estilo": "turbo"}
                 
-                if legendas:
-                    progresso['legendas_dados'] = legendas
-                    progresso['legendas'] = True
-                    # Salva também o texto usado para garantir consistência
-                    progresso['texto_roteiro_completo'] = texto_final
-                    
-                    db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
-                    st.success(f"Legendas geradas com sucesso! ({len(legendas)} segmentos)")
-                    st.rerun()
-                else:
-                    st.error("Erro na geração.")
+                db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
+                st.success(f"Sucesso! Geradas {len(legendas)} linhas de legenda.")
+                st.rerun()
+            else:
+                st.error("Erro na geração.")
 
 # --- PREVIEW ---
 if progresso.get('legendas') and progresso.get('legendas_dados'):
     dados = progresso['legendas_dados']
     st.divider()
-    st.subheader(f"✅ Resultado: {len(dados)} legendas")
+    st.markdown(f"### ✅ Resultado: {len(dados)} legendas")
     
-    with st.expander("Ver detalhes linha a linha", expanded=True):
-        # Mostra as primeiras 5 e as últimas 5 para conferência rápida
-        st.markdown("**Início:**")
-        for item in dados[:5]:
-            st.text(f"[{item['start']:.2f}s - {item['end']:.2f}s]: {item['text']}")
-        
-        if len(dados) > 10:
-            st.markdown("...")
+    with st.expander("Verificar tempos (Início e Fim)", expanded=True):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Começo:**")
+            for item in dados[:5]:
+                st.text(f"{item['start']:.1f}s: {item['text']}")
+        with col_b:
             st.markdown("**Final:**")
             for item in dados[-5:]:
-                st.text(f"[{item['start']:.2f}s - {item['end']:.2f}s]: {item['text']}")
+                st.text(f"{item['start']:.1f}s: {item['text']}")
 
 st.divider()
 _, _, col_nav = st.columns([1, 2, 1])
