@@ -20,7 +20,7 @@ except ImportError:
     st.error("🚨 Erro: Módulo de banco de dados não encontrado.")
     st.stop()
 
-st.set_page_config(page_title="5. Legendas (Debug)", layout="wide")
+st.set_page_config(page_title="5. Legendas", layout="wide")
 
 # ---------------------------------------------------------------------
 # 2. RECUPERAÇÃO DE ESTADO
@@ -40,6 +40,7 @@ progresso, _ = db.load_status(chave_progresso)
 # ---------------------------------------------------------------------
 
 def get_audio_duration(file_path):
+    """Obtém duração exata do áudio (FFprobe > Wave)."""
     try:
         cmd = [
             "ffprobe", "-v", "error", "-show_entries", "format=duration", 
@@ -55,42 +56,53 @@ def get_audio_duration(file_path):
             return 0.0
 
 def split_dynamic_turbo(text, max_words=3):
-    """Algoritmo Turbo (TikTok Style) - Quebra a cada 3 palavras."""
+    """
+    Algoritmo Turbo: Quebra texto em blocos minúsculos (máx 3 palavras).
+    Ignora pontuação complexa para focar em velocidade.
+    """
+    # Limpa espaços
     text = re.sub(r'\s+', ' ', text).strip()
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    final_segments = []
+    words = text.split()
     
-    for sentence in sentences:
-        if not sentence: continue
-        words = sentence.split()
-        chunk = []
-        for word in words:
-            chunk.append(word)
-            # Quebra agressiva para dinamismo
-            if len(chunk) >= max_words or word.endswith(('.', '!', '?', ',', ':', ';')):
-                final_segments.append(" ".join(chunk))
-                chunk = []
-        if chunk:
-            final_segments.append(" ".join(chunk))
-    return final_segments
+    segments = []
+    chunk = []
+    
+    for word in words:
+        chunk.append(word)
+        
+        # Fecha o bloco se atingir 3 palavras OU se tiver pontuação forte
+        # Isso garante que a legenda "corra" e não fique parada
+        if len(chunk) >= max_words or word.endswith(('.', '!', '?', ':', ';')):
+            segments.append(" ".join(chunk))
+            chunk = []
+            
+    if chunk:
+        segments.append(" ".join(chunk))
+        
+    return segments
 
-def gerar_legendas(texto_input, audio_path):
+def gerar_legendas(texto_usuario, audio_path):
     duration = get_audio_duration(audio_path)
     if duration <= 0: return [], 0
     
-    # Segmenta
-    segmentos = split_dynamic_turbo(texto_input, max_words=3)
-    total_len = sum(len(seg) for seg in segmentos)
+    # Usa o texto EXATO que o usuário digitou/colou
+    segmentos = split_dynamic_turbo(texto_usuario, max_words=3)
     
-    if total_len == 0: return [], duration
+    # Se não gerou segmentos (texto vazio), retorna erro
+    if not segmentos: return [], duration
+
+    # Calcula o tamanho total (sem espaços) para proporção
+    total_chars = sum(len(seg) for seg in segmentos)
+    if total_chars == 0: return [], duration
     
     legendas = []
     current_time = 0.0
     
     for seg in segmentos:
+        # Peso proporcional
         weight = len(seg)
-        # Sincronia Proporcional
-        seg_duration = (weight / total_len) * duration
+        seg_duration = (weight / total_chars) * duration
+        
         legendas.append({
             "start": current_time,
             "end": current_time + seg_duration,
@@ -103,7 +115,8 @@ def gerar_legendas(texto_input, audio_path):
 # ---------------------------------------------------------------------
 # 4. INTERFACE
 # ---------------------------------------------------------------------
-st.title("💬 Passo 5: Legendas (Modo Diagnóstico)")
+st.title("💬 Passo 5: Legendas (Manual)")
+st.caption("Controle total sobre o texto e a sincronia.")
 
 if st.button("🔙 Voltar para Overlay"):
     st.switch_page("pages/4_Overlay.py")
@@ -111,104 +124,99 @@ if st.button("🔙 Voltar para Overlay"):
 st.divider()
 
 if not progresso.get('audio'):
-    st.error("⚠️ Áudio não encontrado.")
+    st.error("⚠️ Áudio não encontrado. Gere o áudio primeiro.")
     st.stop()
 
 audio_path = progresso.get('audio_path', '')
 duracao_audio = get_audio_duration(audio_path)
 
-# --- ÁREA DE DIAGNÓSTICO (O Segredo está aqui) ---
-st.subheader("1. Diagnóstico do Texto")
+# --- STATUS DO ÁUDIO ---
+st.info(f"🔊 Áudio detectado: **{duracao_audio:.2f} segundos**")
 
-# Inicializa o session_state do editor se não existir
-if 'texto_legenda_editor' not in st.session_state:
-    # Tenta pegar do banco primeiro
-    texto_inicial = progresso.get('texto_roteiro_completo', '')
-    # Se estiver vazio, tenta montar
-    if not texto_inicial:
-        b1 = progresso.get('bloco_leitura', '')
-        b2 = progresso.get('bloco_reflexao', '')
-        b3 = progresso.get('bloco_aplicacao', '')
-        b4 = progresso.get('bloco_oracao', '')
-        texto_inicial = f"{b1}\n{b2}\n{b3}\n{b4}".strip()
-    
-    st.session_state['texto_legenda_editor'] = texto_inicial
+# --- ÁREA DE TEXTO LIVRE ---
+st.subheader("1. Cole o Texto Completo Aqui")
+st.markdown("""
+**Instrução:** Apague o que estiver na caixa abaixo e **cole o roteiro completo** (Evangelho + Reflexão + Oração).
+*Se a caixa tiver pouco texto, a legenda vai ficar lenta e travar o vídeo.*
+""")
 
-# Caixa de Texto vinculada ao Session State
-texto_atual = st.text_area(
-    "Cole o texto COMPLETO aqui:",
-    value=st.session_state['texto_legenda_editor'],
-    height=300,
-    key='texto_legenda_editor'
+# Carrega valor inicial (apenas uma vez)
+if 'texto_legenda_manual' not in st.session_state:
+    # Tenta pegar do banco, se falhar, deixa vazio para obrigar usuário a colar
+    txt_banco = progresso.get('texto_roteiro_completo', '')
+    st.session_state['texto_legenda_manual'] = txt_banco
+
+# Caixa de texto sem "value" fixo, controlada pelo session_state
+texto_input = st.text_area(
+    "Roteiro Completo:",
+    key="texto_legenda_manual",
+    height=400
 )
 
-# Cálculos em tempo real
-chars = len(texto_atual)
-palavras = len(texto_atual.split())
-ratio = chars / duracao_audio if duracao_audio > 0 else 0
+# --- DIAGNÓSTICO EM TEMPO REAL ---
+palavras = len(texto_input.split())
+caracteres = len(texto_input)
 
-# Exibe Painel de Controle
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("Duração Áudio", f"{duracao_audio:.1f}s")
-with c2:
-    st.metric("Tamanho Texto", f"{chars} caracteres", delta="Baixo" if chars < 200 else "Ok")
-with c3:
-    st.metric("Densidade", f"{ratio:.1f} chars/seg")
+col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+col_metrics1.metric("Palavras no Texto", palavras)
+col_metrics2.metric("Caracteres", caracteres)
+col_metrics3.metric("Duração Áudio", f"{duracao_audio:.1f}s")
 
-# Alerta Visual
-if chars < 100 and duracao_audio > 30:
-    st.error("🚨 **ALERTA CRÍTICO:** O texto é muito curto para este áudio!")
-    st.markdown(f"Você tem **{duracao_audio:.0f} segundos** de áudio, mas apenas **{palavras} palavras** de texto.")
-    st.markdown("👉 **AÇÃO:** Vá até o Roteiro, copie TUDO e cole na caixa acima antes de gerar.")
-    bloqueado = True
+# Alerta visual se houver discrepância
+if duracao_audio > 30 and palavras < 50:
+    st.error("🚨 **ALERTA:** Você tem muito áudio (+30s) para pouquíssimo texto (-50 palavras). A legenda VAI ficar lenta. Por favor, cole o texto completo acima!")
+    pode_gerar = False
 else:
-    st.success("✅ Texto parece compatível com o áudio.")
-    bloqueado = False
+    st.success("✅ Proporção Texto/Áudio parece correta.")
+    pode_gerar = True
 
 st.divider()
 
-col_btn_1, col_btn_2 = st.columns([1, 1])
-
-with col_btn_1:
-    if st.button("🗑️ Resetar Tudo (Emergência)"):
-        progresso['legendas'] = False
-        progresso['legendas_dados'] = []
-        # Limpa o texto do banco para forçar você a colar de novo
-        progresso['texto_roteiro_completo'] = "" 
-        st.session_state['texto_legenda_editor'] = ""
-        db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
-        st.rerun()
-
-with col_btn_2:
-    if st.button("⚡ Gerar Legendas (Usando texto acima)", type="primary", disabled=bloqueado):
-        # 1. Salva explicitamente o que está na caixa agora
-        texto_para_usar = st.session_state['texto_legenda_editor']
-        progresso['texto_roteiro_completo'] = texto_para_usar
-        
-        # 2. Gera
-        legendas, _ = gerar_legendas(texto_para_usar, audio_path)
+# --- BOTÃO DE GERAR ---
+if st.button("⚡ Gerar Legendas (Modo Turbo)", type="primary", disabled=not pode_gerar):
+    with st.spinner("Processando..."):
+        # 1. Gera as legendas
+        legendas, dur = gerar_legendas(texto_input, audio_path)
         
         if legendas:
+            # 2. Salva no banco
             progresso['legendas_dados'] = legendas
             progresso['legendas'] = True
-            progresso['legenda_config'] = {"estilo": "turbo"}
+            progresso['texto_roteiro_completo'] = texto_input # Atualiza o banco com o texto que você colou
             
             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
-            st.success(f"Gerado! {len(legendas)} segmentos criados.")
+            
+            st.success(f"Sucesso! Criados {len(legendas)} segmentos de legenda.")
             st.rerun()
+        else:
+            st.error("Erro ao processar legendas.")
 
-# Preview
+# --- VISUALIZAÇÃO DOS RESULTADOS ---
 if progresso.get('legendas') and progresso.get('legendas_dados'):
     dados = progresso['legendas_dados']
     st.divider()
-    st.markdown(f"### Resultado: {len(dados)} linhas")
     
-    # Mostra tabela completa para você ter certeza
-    with st.expander("Ver todas as linhas (Confira se vai até o final)", expanded=True):
-        st.dataframe(dados)
+    st.subheader(f"📊 Resultado: {len(dados)} blocos de legenda")
+    st.caption("Verifique se o tempo final (última linha) bate com o tempo do áudio.")
 
-# Navegação
+    # Tabela simples para conferência
+    with st.expander("Ver todas as linhas de tempo", expanded=True):
+        # Mostra em formato de tabela simples
+        tabela_view = []
+        for item in dados:
+            tabela_view.append({
+                "Início (s)": f"{item['start']:.2f}",
+                "Fim (s)": f"{item['end']:.2f}",
+                "Texto": item['text']
+            })
+        st.table(tabela_view[:10]) # Mostra as 10 primeiras
+        if len(dados) > 10:
+            st.write(f"... e mais {len(dados)-10} linhas.")
+            st.write(f"**Última Linha:** [{dados[-1]['start']:.2f}s - {dados[-1]['end']:.2f}s] {dados[-1]['text']}")
+
 st.divider()
-if st.button("Ir para Renderização ➡️"):
-    st.switch_page("pages/6_Video_Final.py")
+_, _, col_nav = st.columns([1, 2, 1])
+with col_nav:
+    if progresso.get('legendas'):
+        if st.button("Próximo: Renderizar Vídeo ➡️", type="primary", use_container_width=True):
+            st.switch_page("pages/6_Video_Final.py")
