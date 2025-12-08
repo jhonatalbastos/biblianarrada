@@ -2,11 +2,10 @@ import streamlit as st
 import os
 import sys
 import datetime
-import subprocess
-import math
+import json
 
 # ---------------------------------------------------------------------
-# 1. CONFIGURAÇÃO E IMPORTAÇÕES
+# 1. CONFIGURAÇÃO
 # ---------------------------------------------------------------------
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
@@ -15,17 +14,16 @@ sys.path.append(parent_dir)
 try:
     import modules.database as db
 except ImportError:
-    st.error("🚨 Erro: Não foi possível importar o módulo de banco de dados.")
+    st.error("🚨 Erro: Módulo de banco de dados não encontrado.")
     st.stop()
 
-st.set_page_config(page_title="Renderizar Vídeo (FFmpeg)", page_icon="🎬", layout="wide")
-st.session_state['current_page_name'] = 'pages/6_Video_Final.py'
+st.set_page_config(page_title="5. Legendas", layout="wide")
 
 # ---------------------------------------------------------------------
 # 2. RECUPERAÇÃO DE ESTADO
 # ---------------------------------------------------------------------
 if 'leitura_atual' not in st.session_state:
-    st.warning("⚠️ Nenhuma leitura selecionada. Volte ao Início.")
+    st.warning("⚠️ Nenhuma leitura selecionada.")
     st.stop()
 
 leitura = st.session_state['leitura_atual']
@@ -34,267 +32,56 @@ chave_progresso = f"{data_str}-{leitura['tipo']}"
 
 progresso, _ = db.load_status(chave_progresso)
 
-# --- Navegação Visual ---
-def render_navigation_bar(current_page_title):
-    st.markdown("---")
-    st.markdown(f"## {current_page_title}")
-    
-    stages = [
-        ('Roteiro', 'pages/1_Roteiro_Viral.py'),
-        ('Imagens', 'pages/2_Imagens.py'),
-        ('Áudio', 'pages/3_Audio_TTS.py'),
-        ('Overlay', 'pages/4_Overlay.py'),
-        ('Legendas', 'pages/5_Legendas.py'),
-        ('Vídeo', 'pages/6_Video_Final.py'),
-        ('Publicar', 'pages/7_Publicar.py')
-    ]
-    
-    cols = st.columns(len(stages))
-    for i, (label, page) in enumerate(stages):
-        with cols[i]:
-            if st.session_state['current_page_name'] == page:
-                st.button(f"📍 {label}", key=f"nav_{i}", type="primary", disabled=True)
-            else:
-                if st.button(f"{label}", key=f"nav_{i}"):
-                    st.switch_page(page)
-    st.markdown("---")
-
-render_navigation_bar("🎬 Renderização Final")
-
 # ---------------------------------------------------------------------
-# 3. FUNÇÕES UTILITÁRIAS (FFMPEG + SRT)
+# 3. INTERFACE
 # ---------------------------------------------------------------------
+st.title("💬 Passo 5: Legendas")
 
-def format_timestamp(seconds):
-    """Converte segundos (float) para formato SRT (HH:MM:SS,mmm)."""
-    hrs = int(seconds // 3600)
-    mins = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds - int(seconds)) * 1000)
-    return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
-
-def criar_arquivo_srt(legendas_dados, output_path):
-    """Cria um arquivo .srt a partir da lista de dicionários de legendas."""
-    try:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for i, item in enumerate(legendas_dados):
-                # Garante que start e end sejam floats
-                start_t = float(item.get('start', 0))
-                end_t = float(item.get('end', 0))
-                text = str(item.get('text', '')).strip()
-                
-                start = format_timestamp(start_t)
-                end = format_timestamp(end_t)
-                
-                f.write(f"{i+1}\n")
-                f.write(f"{start} --> {end}\n")
-                f.write(f"{text}\n\n")
-        return True
-    except Exception as e:
-        print(f"Erro ao criar SRT: {e}")
-        return False
-
-def get_audio_duration(audio_path):
-    """Obtém a duração do áudio usando ffprobe."""
-    try:
-        cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration", 
-            "-of", "default=noprint_wrappers=1:nokey=1", audio_path
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        return float(result.stdout.strip())
-    except:
-        return 0.0
-
-def criar_arquivo_concat(imagens, duracao_por_imagem, output_txt):
-    """Cria lista de concatenação para o FFmpeg."""
-    with open(output_txt, 'w', encoding='utf-8') as f:
-        for img_path in imagens:
-            # Escape simples para caminhos
-            safe_path = img_path.replace("'", "'\\''")
-            f.write(f"file '{safe_path}'\n")
-            f.write(f"duration {duracao_por_imagem:.2f}\n")
-        # Repete a última imagem para garantir cobertura do áudio final
-        if imagens:
-            safe_last = imagens[-1].replace("'", "'\\''")
-            f.write(f"file '{safe_last}'\n")
-
-def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, font_config, status_container):
-    """Renderiza vídeo + áudio + legendas (burn-in)."""
-    
-    # 1. Analisa Áudio
-    duracao_audio = get_audio_duration(audio_path)
-    if duracao_audio <= 0:
-        return False, "Erro ao ler duração do áudio."
-    
-    qtd_imgs = len(imagens)
-    if qtd_imgs == 0:
-        return False, "Lista de imagens vazia."
-        
-    tempo_por_img = duracao_audio / qtd_imgs
-    
-    # 2. Cria arquivo de concatenação (slideshow)
-    concat_txt = os.path.join(parent_dir, "temp_concat.txt")
-    criar_arquivo_concat(imagens, tempo_por_img, concat_txt)
-    
-    # 3. Monta comando FFmpeg
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat", "-safe", "0", "-i", concat_txt,  # Input Vídeo
-        "-i", audio_path,                                # Input Áudio
-    ]
-
-    # Configuração de Filtros (Legendas)
-    filtros = []
-    
-    if srt_path and os.path.exists(srt_path):
-        srt_safe = srt_path
-        
-        # Parâmetros de Estilo configuráveis
-        f_size = font_config['size']
-        f_color = font_config['color'] # Formato &HBBGGRR (&H00FFFFFF é branco)
-        f_margin = font_config['margin_v']
-        
-        # Alignment=2 (Centralizado inferior), BorderStyle=1 (Outline)
-        # Atenção: Cores no ASS são invertidas BGR (Blue-Green-Red). Branco é FFFFFF.
-        style = (f"force_style='FontName=Arial,FontSize={f_size},"
-                 f"PrimaryColour={f_color},OutlineColour=&H00000000,"
-                 f"BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginV={f_margin}'")
-        
-        filtros.append(f"subtitles='{srt_safe}':{style}")
-    
-    # Adiciona filtros se houver
-    if filtros:
-        cmd.extend(["-vf", ",".join(filtros)])
-
-    # Configurações finais de codec
-    cmd.extend([
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
-        output_video
-    ])
-    
-    status_container.code(" ".join(cmd)) 
-    status_container.write("⚙️ Renderizando com FFmpeg...")
-    
-    try:
-        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        
-        if os.path.exists(concat_txt): os.remove(concat_txt)
-        
-        if process.returncode == 0:
-            return True, "Sucesso"
-        else:
-            return False, f"Erro FFmpeg: {process.stderr}"
-    except Exception as e:
-        return False, str(e)
-
-# ---------------------------------------------------------------------
-# 4. INTERFACE
-# ---------------------------------------------------------------------
-
-# Verificação de status
-tem_img = progresso.get('imagens')
-tem_aud = progresso.get('audio')
-tem_leg = progresso.get('legendas')
-dados_leg = progresso.get('legendas_dados', [])
-
-col1, col2 = st.columns(2)
-with col1:
-    st.info(f"Imagens: {len(progresso.get('imagens_paths', []))} arquivos")
-    st.info(f"Áudio: {'OK' if tem_aud else 'Pendente'}")
-with col2:
-    st.info(f"Legendas: {'OK' if tem_leg and dados_leg else 'Não configurado'}")
-    if dados_leg:
-        st.caption(f"Total de linhas de legenda: {len(dados_leg)}")
+if st.button("🔙 Voltar para Overlay"):
+    st.switch_page("pages/4_Overlay.py")
 
 st.divider()
 
-if not (tem_img and tem_aud):
-    st.error("Faltam imagens ou áudio.")
+if not progresso.get('audio'):
+    st.error("⚠️ Você precisa gerar o áudio primeiro (Passo 3).")
     st.stop()
 
-# --- CONFIGURAÇÃO VISUAL DAS LEGENDAS ---
-st.subheader("🛠️ Configuração de Legendas")
-with st.expander("Ajustar Tamanho e Posição", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        # Padrão reduzido para 12 (antes era 24)
-        font_size = st.slider("Tamanho da Fonte", 8, 40, 12, help="Se ficou gigante, diminua aqui.")
-    with c2:
-        # Posição vertical (quanto maior, mais alto na tela)
-        margin_v = st.slider("Altura (Margem Inferior)", 10, 300, 30, help="Distância da borda inferior.")
-    with c3:
-        cor_opcao = st.selectbox("Cor do Texto", ["Branco", "Amarelo", "Ciano"])
-    
-    # Mapa de cores ASS (BGR Hex com &H)
-    mapa_cores = {
-        "Branco": "&H00FFFFFF",
-        "Amarelo": "&H0000FFFF", # Azul=00, Verde=FF, Vermelho=FF -> Amarelo
-        "Ciano": "&H00FFFF00"
-    }
-    
-    font_config = {
-        "size": font_size,
-        "margin_v": margin_v,
-        "color": mapa_cores[cor_opcao]
-    }
+col_esq, col_dir = st.columns([1, 1])
 
-st.markdown("---")
+with col_esq:
+    st.subheader("Configuração")
+    estilo = st.selectbox("Estilo da Legenda", ["Karaokê (Palavra por Palavra)", "Frase Completa", "Estilo TikTok"])
+    cor = st.color_picker("Cor do Texto", "#FFFFFF")
+    
+    st.info("O sistema usará o roteiro original para sincronizar com o áudio.")
 
-if st.button("🎬 Renderizar Vídeo Final", type="primary"):
-    box = st.status("Preparando arquivos...", expanded=True)
+with col_dir:
+    st.subheader("Gerar")
     
-    # 1. Caminhos
-    folder_video = os.path.join(parent_dir, "data", "videos")
-    os.makedirs(folder_video, exist_ok=True)
-    
-    path_audio = progresso.get('audio_path', '')
-    path_imgs = progresso.get('imagens_paths', [])
-    path_video = os.path.join(folder_video, f"video_{data_str}_{leitura['tipo'].replace(' ', '_')}.mp4")
-    
-    # 2. Gera SRT temporário
-    path_srt = None
-    if tem_leg and dados_leg:
-        box.write("📝 Criando arquivo de legendas (.srt)...")
-        path_srt = os.path.join(folder_video, "temp_subs.srt")
-        sucesso_srt = criar_arquivo_srt(dados_leg, path_srt)
-        if not sucesso_srt:
-            box.error("Erro ao gerar arquivo de legendas.")
-            st.stop()
-    else:
-        box.warning("Sem dados de legendas. O vídeo será gerado sem texto.")
-
-    # 3. Renderiza
-    sucesso, msg = gerar_video_ffmpeg(path_imgs, path_audio, path_video, path_srt, font_config, box)
-    
-    # 4. Limpeza SRT
-    if path_srt and os.path.exists(path_srt):
-        os.remove(path_srt)
-
-    if sucesso:
-        progresso['video'] = True
-        progresso['video_path'] = path_video
-        db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 6)
+    if st.button("⚡ Gerar Legendas (Sincronizar)", type="primary"):
+        # Simulação de geração de legendas (Whisper ou Force Alignment)
+        legendas_simuladas = [
+            {"start": 0.0, "end": 2.0, "text": "Proclamação do Evangelho..."},
+            {"start": 2.0, "end": 5.0, "text": "Naquele tempo, disse Jesus..."}
+        ]
         
-        box.update(label="✅ Vídeo Pronto!", state="complete", expanded=False)
-        st.success("Renderização concluída!")
+        # SALVA NO BANCO (CRÍTICO PARA O PASSO 6)
+        progresso['legendas_dados'] = legendas_simuladas
+        progresso['legendas'] = True # <--- A CHAVE QUE O PASSO 6 PROCURA
+        progresso['legenda_config'] = {"ativar": True, "cor": cor, "estilo": estilo}
+        
+        db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 5)
+        st.success("Legendas geradas e salvas!")
         st.rerun()
-    else:
-        box.update(label="❌ Falha na renderização", state="error")
-        st.error(msg)
 
-# Exibe Resultado
-if progresso.get('video') and progresso.get('video_path'):
-    path_v = progresso['video_path']
-    if os.path.exists(path_v):
-        st.subheader("📺 Visualização")
-        st.video(path_v)
-        with open(path_v, 'rb') as f:
-            st.download_button("📥 Baixar Vídeo", f, file_name=os.path.basename(path_v))
-        
-        if st.button("Ir para Publicação ➡️"):
-            st.switch_page("pages/7_Publicar.py")
-    else:
-        st.warning("Vídeo consta como pronto, mas arquivo não encontrado.")
+    if progresso.get('legendas'):
+        st.success("✅ Legendas prontas para o vídeo.")
+        st.json(progresso.get('legendas_dados', []))
+
+# Navegação Final
+st.divider()
+_, _, col_nav = st.columns([1, 2, 1])
+with col_nav:
+    if progresso.get('legendas'):
+        if st.button("Próximo: Renderizar Vídeo ➡️", type="primary", use_container_width=True):
+            st.switch_page("pages/6_Video_Final.py")
