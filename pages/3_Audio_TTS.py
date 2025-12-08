@@ -1,7 +1,7 @@
 import streamlit as st
 import sys
 import os
-import wave
+import re  # Importado para limpar o texto
 from datetime import datetime
 
 # ---------------------------------------------------------------------
@@ -53,9 +53,26 @@ if not texto_roteiro:
     b4 = progresso.get('bloco_oracao', '')
     texto_roteiro = f"{b1}\n\n{b2}\n\n{b3}\n\n{b4}".strip()
 
+# Inicializa o valor no session state se ainda não existir
+if "editor_texto_audio" not in st.session_state:
+    st.session_state["editor_texto_audio"] = texto_roteiro
+
 # ---------------------------------------------------------------------
-# 4. FUNÇÃO DE GERAÇÃO PIPER TTS (CORRIGIDO FINAL)
+# 4. FUNÇÕES AUXILIARES
 # ---------------------------------------------------------------------
+
+def limpar_texto_para_tts(texto):
+    """Remove caracteres Markdown que podem confundir o gerador de áudio."""
+    if not texto:
+        return ""
+    # Remove negrito/itálico Markdown (** ou *)
+    texto_limpo = texto.replace("**", "").replace("*", "")
+    # Remove cabeçalhos Markdown (##)
+    texto_limpo = texto_limpo.replace("###", "").replace("##", "").replace("#", "")
+    # Remove espaços duplos
+    texto_limpo = re.sub(' +', ' ', texto_limpo)
+    return texto_limpo.strip()
+
 def gerar_audio_piper(texto, caminho_saida):
     """Gera áudio usando o modelo local do Piper (Escrevendo direto em binário)."""
     
@@ -75,17 +92,16 @@ def gerar_audio_piper(texto, caminho_saida):
         # Carrega a voz
         voice = PiperVoice.load(model_path)
         
-        # CORREÇÃO PRINCIPAL:
-        # O Piper espera um objeto de arquivo binário padrão, não um objeto wave.
-        # Ele mesmo escreve os headers do WAV.
+        # O Piper espera um objeto de arquivo binário padrão
         with open(caminho_saida, "wb") as arquivo_wav:
             voice.synthesize(texto, arquivo_wav)
         
         # Verificação final: se o arquivo for muito pequeno (só cabeçalho), falhou
         if os.path.exists(caminho_saida):
             tamanho_arquivo = os.path.getsize(caminho_saida)
-            if tamanho_arquivo <= 44: # 44 bytes é apenas o cabeçalho WAV
-                st.error("⚠️ O arquivo de áudio foi criado mas parece vazio. Verifique se o texto não está em branco.")
+            # 44 bytes é apenas o cabeçalho WAV. Se tiver menos de 1kb, provavelmente está mudo.
+            if tamanho_arquivo <= 44: 
+                st.error(f"⚠️ O arquivo foi criado mas está vazio ({tamanho_arquivo} bytes). O Piper não conseguiu ler o texto.")
                 return False
             return True
         else:
@@ -117,21 +133,24 @@ if not texto_roteiro:
 
 col_esq, col_dir = st.columns([1, 1])
 
-# --- COLUNA 1: VISUALIZAR ROTEIRO ---
+# --- COLUNA 1: VISUALIZAR E EDITAR ROTEIRO ---
 with col_esq:
     st.subheader("📜 Roteiro Confirmado")
-    st.info("Este é o texto que será narrado.")
+    st.info("Abaixo está o texto que será lido. Edite se necessário.")
     
-    with st.container(border=True):
-        st.markdown(texto_roteiro)
+    # CORREÇÃO: Usando key para vincular diretamente ao session_state
+    texto_editado = st.text_area(
+        "Editor de Texto para Áudio", 
+        value=st.session_state["editor_texto_audio"], 
+        height=400,
+        key="editor_texto_audio"
+    )
     
-    with st.expander("✏️ Editar Roteiro (Ajuste Final)"):
-        texto_editado = st.text_area("Ajustar texto para áudio:", value=texto_roteiro, height=300)
-        if st.button("Salvar Ajuste de Texto"):
-            progresso['texto_roteiro_completo'] = texto_editado
-            db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 3)
-            st.success("Texto atualizado!")
-            st.rerun()
+    # Atualiza o banco se houver mudança
+    if texto_editado != progresso.get('texto_roteiro_completo'):
+        progresso['texto_roteiro_completo'] = texto_editado
+        # Não salvamos no banco a cada digitação para não travar, 
+        # mas o botão de gerar usará o valor atual da caixa.
 
 # --- COLUNA 2: GERADOR DE ÁUDIO PIPER ---
 with col_dir:
@@ -158,12 +177,18 @@ with col_dir:
     
     if st.button("▶️ Gerar Narração com Piper", type="primary", use_container_width=True):
         
-        texto_para_falar = texto_editado if 'texto_editado' in locals() else texto_roteiro
+        # 1. Pega o texto diretamente do estado da caixa de texto
+        texto_bruto = st.session_state["editor_texto_audio"]
         
-        # Limpeza básica para evitar erros no TTS
-        texto_para_falar = texto_para_falar.strip()
+        # 2. Limpa o texto (remove Markdown)
+        texto_para_falar = limpar_texto_para_tts(texto_bruto)
+        
+        # Debug visual (opcional, ajuda a entender o que está indo para o Piper)
+        with st.expander("Ver texto limpo enviado para IA", expanded=False):
+            st.code(texto_para_falar)
+
         if not texto_para_falar:
-            st.error("O texto está vazio!")
+            st.error("O texto está vazio após a limpeza! Escreva algo na caixa de texto.")
         else:
             with st.spinner("🔊 Sintetizando voz (isso pode levar alguns segundos)..."):
                 sucesso = gerar_audio_piper(texto_para_falar, caminho_final_arquivo)
@@ -173,6 +198,7 @@ with col_dir:
                     progresso['audio'] = True
                     progresso['audio_path'] = caminho_final_arquivo
                     progresso['voz_usada'] = "Piper - Faber Medium"
+                    progresso['texto_roteiro_completo'] = texto_bruto # Salva a versão final usada
                     
                     # Código da etapa 3 = Audio
                     db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 3)
