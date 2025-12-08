@@ -3,7 +3,6 @@ import os
 import sys
 import datetime
 import subprocess
-import math
 
 # ---------------------------------------------------------------------
 # 1. CONFIGURAÇÃO E IMPORTAÇÕES
@@ -18,7 +17,7 @@ except ImportError:
     st.error("🚨 Erro: Não foi possível importar o módulo de banco de dados.")
     st.stop()
 
-st.set_page_config(page_title="Renderizar Vídeo (FFmpeg)", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Renderizar Vídeo", page_icon="🎬", layout="wide")
 st.session_state['current_page_name'] = 'pages/6_Video_Final.py'
 
 # ---------------------------------------------------------------------
@@ -34,17 +33,17 @@ chave_progresso = f"{data_str}-{leitura['tipo']}"
 
 progresso, _ = db.load_status(chave_progresso)
 
-# --- Navegação Visual ---
+# --- Navegação Visual (Sem Legendas) ---
 def render_navigation_bar(current_page_title):
     st.markdown("---")
     st.markdown(f"## {current_page_title}")
     
+    # REMOVIDO "LEGENDAS"
     stages = [
         ('Roteiro', 'pages/1_Roteiro_Viral.py'),
         ('Imagens', 'pages/2_Imagens.py'),
         ('Áudio', 'pages/3_Audio_TTS.py'),
         ('Overlay', 'pages/4_Overlay.py'),
-        ('Legendas', 'pages/5_Legendas.py'),
         ('Vídeo', 'pages/6_Video_Final.py'),
         ('Publicar', 'pages/7_Publicar.py')
     ]
@@ -62,40 +61,10 @@ def render_navigation_bar(current_page_title):
 render_navigation_bar("🎬 Renderização Final")
 
 # ---------------------------------------------------------------------
-# 3. FUNÇÕES UTILITÁRIAS (FFMPEG + SRT)
+# 3. FUNÇÕES UTILITÁRIAS (FFMPEG SIMPLES)
 # ---------------------------------------------------------------------
 
-def format_timestamp(seconds):
-    """Converte segundos (float) para formato SRT (HH:MM:SS,mmm)."""
-    hrs = int(seconds // 3600)
-    mins = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds - int(seconds)) * 1000)
-    return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
-
-def criar_arquivo_srt(legendas_dados, output_path):
-    """Cria um arquivo .srt a partir da lista de dicionários de legendas."""
-    try:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for i, item in enumerate(legendas_dados):
-                # Garante que start e end sejam floats
-                start_t = float(item.get('start', 0))
-                end_t = float(item.get('end', 0))
-                text = str(item.get('text', '')).strip()
-                
-                start = format_timestamp(start_t)
-                end = format_timestamp(end_t)
-                
-                f.write(f"{i+1}\n")
-                f.write(f"{start} --> {end}\n")
-                f.write(f"{text}\n\n")
-        return True
-    except Exception as e:
-        print(f"Erro ao criar SRT: {e}")
-        return False
-
 def get_audio_duration(audio_path):
-    """Obtém a duração do áudio usando ffprobe."""
     try:
         cmd = [
             "ffprobe", "-v", "error", "-show_entries", "format=duration", 
@@ -107,20 +76,17 @@ def get_audio_duration(audio_path):
         return 0.0
 
 def criar_arquivo_concat(imagens, duracao_por_imagem, output_txt):
-    """Cria lista de concatenação para o FFmpeg."""
     with open(output_txt, 'w', encoding='utf-8') as f:
         for img_path in imagens:
-            # Escape simples para caminhos
             safe_path = img_path.replace("'", "'\\''")
             f.write(f"file '{safe_path}'\n")
             f.write(f"duration {duracao_por_imagem:.2f}\n")
-        # Repete a última imagem para garantir cobertura do áudio final
         if imagens:
             safe_last = imagens[-1].replace("'", "'\\''")
             f.write(f"file '{safe_last}'\n")
 
-def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, font_config, status_container):
-    """Renderiza vídeo + áudio + legendas (burn-in)."""
+def gerar_video_ffmpeg(imagens, audio_path, output_video, status_container):
+    """Renderiza vídeo + áudio (SEM LEGENDAS)."""
     
     # 1. Analisa Áudio
     duracao_audio = get_audio_duration(audio_path)
@@ -133,47 +99,20 @@ def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, font_config,
         
     tempo_por_img = duracao_audio / qtd_imgs
     
-    # 2. Cria arquivo de concatenação (slideshow)
+    # 2. Cria arquivo de concatenação
     concat_txt = os.path.join(parent_dir, "temp_concat.txt")
     criar_arquivo_concat(imagens, tempo_por_img, concat_txt)
     
-    # 3. Monta comando FFmpeg
+    # 3. Monta comando FFmpeg (Simples)
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0", "-i", concat_txt,  # Input Vídeo
         "-i", audio_path,                                # Input Áudio
-    ]
-
-    # Configuração de Filtros (Legendas)
-    filtros = []
-    
-    if srt_path and os.path.exists(srt_path):
-        srt_safe = srt_path
-        
-        # Parâmetros de Estilo configuráveis
-        f_size = font_config['size']
-        f_color = font_config['color'] # Formato &HBBGGRR (&H00FFFFFF é branco)
-        f_margin = font_config['margin_v']
-        
-        # Alignment=2 (Centralizado inferior), BorderStyle=1 (Outline)
-        # Atenção: Cores no ASS são invertidas BGR (Blue-Green-Red). Branco é FFFFFF.
-        style = (f"force_style='FontName=Arial,FontSize={f_size},"
-                 f"PrimaryColour={f_color},OutlineColour=&H00000000,"
-                 f"BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginV={f_margin}'")
-        
-        filtros.append(f"subtitles='{srt_safe}':{style}")
-    
-    # Adiciona filtros se houver
-    if filtros:
-        cmd.extend(["-vf", ",".join(filtros)])
-
-    # Configurações finais de codec
-    cmd.extend([
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
         "-c:a", "aac", "-b:a", "192k",
         "-shortest",
         output_video
-    ])
+    ]
     
     status_container.code(" ".join(cmd)) 
     status_container.write("⚙️ Renderizando com FFmpeg...")
@@ -197,51 +136,18 @@ def gerar_video_ffmpeg(imagens, audio_path, output_video, srt_path, font_config,
 # Verificação de status
 tem_img = progresso.get('imagens')
 tem_aud = progresso.get('audio')
-tem_leg = progresso.get('legendas')
-dados_leg = progresso.get('legendas_dados', [])
 
 col1, col2 = st.columns(2)
 with col1:
     st.info(f"Imagens: {len(progresso.get('imagens_paths', []))} arquivos")
-    st.info(f"Áudio: {'OK' if tem_aud else 'Pendente'}")
 with col2:
-    st.info(f"Legendas: {'OK' if tem_leg and dados_leg else 'Não configurado'}")
-    if dados_leg:
-        st.caption(f"Total de linhas de legenda: {len(dados_leg)}")
+    st.info(f"Áudio: {'OK' if tem_aud else 'Pendente'}")
 
 st.divider()
 
 if not (tem_img and tem_aud):
     st.error("Faltam imagens ou áudio.")
     st.stop()
-
-# --- CONFIGURAÇÃO VISUAL DAS LEGENDAS ---
-st.subheader("🛠️ Configuração de Legendas")
-with st.expander("Ajustar Tamanho e Posição", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        # Padrão reduzido para 12 (antes era 24)
-        font_size = st.slider("Tamanho da Fonte", 8, 40, 12, help="Se ficou gigante, diminua aqui.")
-    with c2:
-        # Posição vertical (quanto maior, mais alto na tela)
-        margin_v = st.slider("Altura (Margem Inferior)", 10, 300, 30, help="Distância da borda inferior.")
-    with c3:
-        cor_opcao = st.selectbox("Cor do Texto", ["Branco", "Amarelo", "Ciano"])
-    
-    # Mapa de cores ASS (BGR Hex com &H)
-    mapa_cores = {
-        "Branco": "&H00FFFFFF",
-        "Amarelo": "&H0000FFFF", # Azul=00, Verde=FF, Vermelho=FF -> Amarelo
-        "Ciano": "&H00FFFF00"
-    }
-    
-    font_config = {
-        "size": font_size,
-        "margin_v": margin_v,
-        "color": mapa_cores[cor_opcao]
-    }
-
-st.markdown("---")
 
 if st.button("🎬 Renderizar Vídeo Final", type="primary"):
     box = st.status("Preparando arquivos...", expanded=True)
@@ -254,25 +160,9 @@ if st.button("🎬 Renderizar Vídeo Final", type="primary"):
     path_imgs = progresso.get('imagens_paths', [])
     path_video = os.path.join(folder_video, f"video_{data_str}_{leitura['tipo'].replace(' ', '_')}.mp4")
     
-    # 2. Gera SRT temporário
-    path_srt = None
-    if tem_leg and dados_leg:
-        box.write("📝 Criando arquivo de legendas (.srt)...")
-        path_srt = os.path.join(folder_video, "temp_subs.srt")
-        sucesso_srt = criar_arquivo_srt(dados_leg, path_srt)
-        if not sucesso_srt:
-            box.error("Erro ao gerar arquivo de legendas.")
-            st.stop()
-    else:
-        box.warning("Sem dados de legendas. O vídeo será gerado sem texto.")
-
-    # 3. Renderiza
-    sucesso, msg = gerar_video_ffmpeg(path_imgs, path_audio, path_video, path_srt, font_config, box)
+    # 2. Renderiza (Sem argumentos de legenda)
+    sucesso, msg = gerar_video_ffmpeg(path_imgs, path_audio, path_video, box)
     
-    # 4. Limpeza SRT
-    if path_srt and os.path.exists(path_srt):
-        os.remove(path_srt)
-
     if sucesso:
         progresso['video'] = True
         progresso['video_path'] = path_video
