@@ -3,6 +3,8 @@ import os
 import sys
 import datetime
 import requests
+import json
+import base64
 import time
 from PIL import Image
 from io import BytesIO
@@ -19,14 +21,6 @@ try:
 except ImportError:
     st.error("🚨 Erro: Módulo de banco de dados não encontrado.")
     st.stop()
-
-# Tenta importar a biblioteca do Google (se não tiver, avisa o usuário)
-HAS_GOOGLE_GENAI = False
-try:
-    import google.generativeai as genai
-    HAS_GOOGLE_GENAI = True
-except ImportError:
-    pass
 
 st.set_page_config(page_title="2. Criar Imagens", layout="wide")
 st.session_state['current_page_name'] = 'pages/2_Imagens.py'
@@ -45,8 +39,6 @@ data_str = st.session_state.get('data_atual_str', datetime.date.today().strftime
 chave_progresso = f"{data_str}-{leitura['tipo']}"
 
 progresso, _ = db.load_status(chave_progresso)
-
-# Recupera prompts do passo anterior
 prompts = progresso.get('prompts_imagem', {})
 
 # ---------------------------------------------------------------------
@@ -55,13 +47,12 @@ prompts = progresso.get('prompts_imagem', {})
 
 def gerar_pollinations(prompt, width=1080, height=1920, seed=None):
     """Gera imagem usando Pollinations.ai (Modelo Turbo)."""
-    # Adiciona seed aleatória se não fornecida para variar resultados
     if not seed:
         import random
         seed = random.randint(0, 999999)
     
-    # URL formatada para modelo Turbo e Aspect Ratio 9:16
     prompt_safe = requests.utils.quote(prompt)
+    # nologo=true remove a marca d'água do pollinations
     url = f"https://image.pollinations.ai/prompt/{prompt_safe}?model=turbo&width={width}&height={height}&seed={seed}&nologo=true"
     
     try:
@@ -75,47 +66,50 @@ def gerar_pollinations(prompt, width=1080, height=1920, seed=None):
         st.error(f"Erro de conexão Pollinations: {e}")
         return None
 
-def gerar_google_imagen(prompt, api_key, model_version):
-    """Gera imagem usando Google Imagen (Via API)."""
-    if not HAS_GOOGLE_GENAI:
-        st.error("Biblioteca 'google-generativeai' não instalada. Rode: pip install google-generativeai")
-        return None
-
-    try:
-        genai.configure(api_key=api_key)
-        
-        # Mapeamento de nomes amigáveis para IDs de modelo
-        model_map = {
-            "Imagen 3 (Mais Recente)": "imagen-3.0-generate-001",
-            "Imagen 2 (High Def)": "imagen-2.0-high-definition-tyano",
-            "Imagen 2 (Padrão)": "imagen-2.0"
+def gerar_google_imagen_rest(prompt, api_key, model_version="imagen-3.0-generate-001"):
+    """
+    Gera imagem usando a API REST do Google (Gemini/Imagen).
+    Isso evita problemas de versão da biblioteca Python.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_version}:predict?key={api_key}"
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    # Corpo da requisição para o endpoint predict
+    data = {
+        "instances": [
+            {
+                "prompt": prompt
+            }
+        ],
+        "parameters": {
+            "sampleCount": 1,
+            "aspectRatio": "9:16"
         }
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=60)
         
-        model_id = model_map.get(model_version, "imagen-3.0-generate-001")
-        imagem_model = genai.ImageGenerationModel(model_id)
+        if response.status_code != 200:
+            st.error(f"Erro Google API ({response.status_code}): {response.text}")
+            return None
+            
+        result = response.json()
         
-        # Gera a imagem (formato vertical 9:16)
-        response = imagem_model.generate_images(
-            prompt=prompt,
-            number_of_images=1,
-            aspect_ratio="9:16",
-            safety_filter_threshold="BLOCK_ONLY_HIGH"
-        )
-        
-        # O objeto retornado pelo Google já tem método para salvar ou converter
-        # Aqui vamos converter para BytesIO para manter compatibilidade
-        img_pil = response.images[0]._pil_image # Acesso à imagem PIL interna ou similar
-        
-        # Se o objeto retornado não for PIL direto, tratamos:
-        # Nota: Dependendo da versão da lib, response.images[0] já é PIL Image.
-        
-        output = BytesIO()
-        img_pil.save(output, format="PNG")
-        output.seek(0)
-        return output
-
+        # O Google retorna a imagem em Base64 dentro de 'predictions'
+        if 'predictions' in result and len(result['predictions']) > 0:
+            b64_data = result['predictions'][0]['bytesBase64Encoded']
+            image_data = base64.b64decode(b64_data)
+            return BytesIO(image_data)
+        else:
+            st.error("A API do Google não retornou nenhuma imagem válida.")
+            return None
+            
     except Exception as e:
-        st.error(f"Erro Google Imagen: {e}")
+        st.error(f"Erro ao conectar na API do Google: {e}")
         return None
 
 # ---------------------------------------------------------------------
@@ -135,20 +129,21 @@ if not prompts:
 
 # --- CONFIGURAÇÃO DO GERADOR ---
 st.sidebar.header("⚙️ Configuração IA")
-motor_ia = st.sidebar.radio("Escolha o Gerador:", ["Pollinations (Grátis/Turbo)", "Google Imagen (Alta Qualidade)"])
+motor_ia = st.sidebar.radio("Escolha o Gerador:", ["Pollinations (Grátis/Rápido)", "Google Imagen (Alta Qualidade)"])
 
 api_key_google = ""
 modelo_google = ""
 
-if motor_ia == "Google Imagen (Alta Qualidade)":
+if "Google" in motor_ia:
     st.sidebar.markdown("---")
-    api_key_google = st.sidebar.text_input("Sua Google API Key:", type="password", help="Pegue no Google AI Studio")
+    st.sidebar.info("Para usar o Google Imagen, você precisa de uma API Key do Google AI Studio.")
+    api_key_google = st.sidebar.text_input("Sua Google API Key:", type="password")
     modelo_google = st.sidebar.selectbox(
         "Versão do Modelo:", 
-        ["Imagen 3 (Mais Recente)", "Imagen 2 (High Def)", "Imagen 2 (Padrão)"]
+        ["imagen-3.0-generate-001", "imagen-3.0-fast-generate-001"]
     )
     if not api_key_google:
-        st.sidebar.warning("⚠️ Insira a API Key para usar o Google.")
+        st.sidebar.warning("⚠️ Insira a API Key para prosseguir.")
 
 col_esq, col_dir = st.columns([1, 1])
 
@@ -173,11 +168,13 @@ with col_dir:
     st.subheader("🖼️ Gerar Imagens")
     
     # Botão de Ação Principal
-    if st.button(f"✨ Gerar Imagens com {motor_ia.split()[0]}", type="primary"):
+    nome_botao = "✨ Gerar Imagens (Pollinations)" if "Pollinations" in motor_ia else "✨ Gerar Imagens (Google)"
+    
+    if st.button(nome_botao, type="primary"):
         
         # Validação Google
         if "Google" in motor_ia and not api_key_google:
-            st.error("Para usar o Google Imagen, você precisa preencher a API Key na barra lateral.")
+            st.error("Para usar o Google Imagen, preencha a API Key na barra lateral.")
             st.stop()
 
         folder = os.path.join(parent_dir, "data", "imagens")
@@ -185,10 +182,10 @@ with col_dir:
         novas_imagens = []
         prompts_lista = [p1, p2, p3, p4]
         
-        bar = st.progress(0)
+        bar = st.progress(0, text="Iniciando...")
         
         for i, prompt_text in enumerate(prompts_lista):
-            st.text(f"Gerando cena {i+1}...")
+            bar.progress((i * 25), text=f"Gerando cena {i+1} de 4...")
             
             img_io = None
             
@@ -196,7 +193,7 @@ with col_dir:
             if "Pollinations" in motor_ia:
                 img_io = gerar_pollinations(prompt_text)
             elif "Google" in motor_ia:
-                img_io = gerar_google_imagen(prompt_text, api_key_google, modelo_google)
+                img_io = gerar_google_imagen_rest(prompt_text, api_key_google, modelo_google)
             
             # Salvar imagem se gerada com sucesso
             if img_io:
@@ -208,17 +205,19 @@ with col_dir:
                 
                 novas_imagens.append(path)
             else:
-                st.error(f"Falha ao gerar cena {i+1}")
+                st.warning(f"Falha ao gerar cena {i+1}. Tentando continuar...")
             
-            bar.progress((i + 1) / 4)
+        bar.progress(100, text="Concluído!")
         
         # Salva caminhos no banco
         if len(novas_imagens) > 0:
             progresso['imagens_paths'] = novas_imagens
             progresso['imagens'] = True
             db.update_status(chave_progresso, data_str, leitura['tipo'], progresso, 2)
-            st.success("Todas as imagens foram geradas e salvas!")
+            st.success(f"Sucesso! {len(novas_imagens)} imagens salvas.")
             st.rerun()
+        else:
+            st.error("Nenhuma imagem foi gerada. Verifique sua conexão ou API Key.")
 
     # --- GALERIA DE PREVIEW ---
     imagens_salvas = progresso.get('imagens_paths', [])
