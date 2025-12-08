@@ -17,7 +17,7 @@ except ImportError:
     st.error("🚨 Erro: Não foi possível importar o módulo de banco de dados.")
     st.stop()
 
-# Tenta importar a biblioteca do Piper (necessário estar no requirements.txt)
+# Tenta importar a biblioteca do Piper
 try:
     from piper.voice import PiperVoice
 except ImportError:
@@ -54,7 +54,7 @@ if not texto_roteiro:
     texto_roteiro = f"{b1}\n\n{b2}\n\n{b3}\n\n{b4}".strip()
 
 # ---------------------------------------------------------------------
-# 4. FUNÇÃO DE GERAÇÃO PIPER TTS
+# 4. FUNÇÃO DE GERAÇÃO PIPER TTS (CORRIGIDA)
 # ---------------------------------------------------------------------
 def gerar_audio_piper(texto, caminho_saida):
     """Gera áudio usando o modelo local do Piper."""
@@ -71,8 +71,13 @@ def gerar_audio_piper(texto, caminho_saida):
         # Carrega a voz
         voice = PiperVoice.load(model_path)
         
-        # Sintetiza para arquivo WAV
+        # Sintetiza para arquivo WAV com configurações explícitas
         with wave.open(caminho_saida, "wb") as wav_file:
+            # CORREÇÃO: Define os parâmetros antes de escrever
+            wav_file.setnchannels(1)          # Mono
+            wav_file.setsampwidth(2)          # 16-bit (2 bytes)
+            wav_file.setframerate(voice.config.sample_rate) # Taxa do modelo
+            
             voice.synthesize(texto, wav_file)
             
         return True
@@ -89,7 +94,6 @@ cols_header = st.columns([3, 1])
 with cols_header[0]:
     st.caption(f"Leitura: **{leitura['titulo']}** | Data: {data_str}")
 with cols_header[1]:
-    # CORREÇÃO: Link para a página correta anterior
     if st.button("🔙 Voltar"):
         st.switch_page("pages/2_Imagens.py")
 
@@ -181,7 +185,6 @@ col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
 
 with col_nav_3:
     if progresso.get('audio'):
-        # CORREÇÃO: Próxima etapa lógica é Overlay (Passo 4)
         if st.button("Próximo: Overlay e Legendas ➡️", type="primary", use_container_width=True):
             st.switch_page("pages/4_Overlay.py")
     else:
